@@ -1,6 +1,5 @@
 dspy==2.6.2
 graspologic==3.4.1
-hnswlib==0.7.0
 jsonlines==4.0.0
 matplotlib==3.10.0
 nano_vectordb==0.0.2
