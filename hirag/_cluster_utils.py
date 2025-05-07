@@ -219,7 +219,7 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
             cluster_sizes = Counter(np.concatenate(clusters))
             # calculate cluster sparsity
             cluster_sparsity = 1 - sum([x * (x - 1) for x in cluster_sizes.values()])/(len(nodes) * (len(nodes) - 1))
-            cluster_sparsity_change_rate = (abs(cluster_sparsity - pre_cluster_sparsity) / pre_cluster_sparsity)
+            cluster_sparsity_change_rate = (abs(cluster_sparsity - pre_cluster_sparsity) / (pre_cluster_sparsity + 1e-8))
             pre_cluster_sparsity = cluster_sparsity
             logging.info(f"[Cluster Sparsity: {round(cluster_sparsity, 4) * 100}%]")
             # stop if there will be no improvements on clustering
