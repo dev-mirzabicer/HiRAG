@@ -1,4 +1,4 @@
-# Retrieval-Augmented Generation with Hierarchical Knowledge (HiRAG)
+# Retrieval-Augmented Generation with Hierarchical Knowledge (🤗 HiRAG)
 This is the repo for the paper [Retrieval-Augmented Generation with Hierarchical Knowledge](https://arxiv.org/abs/2503.10150).
 
 ## Model Pipeline
