@@ -250,7 +250,7 @@ We gratefully acknowledge the use of the following open-source projects in our w
 - [RAPTOR](https://github.com/parthsarthi03/raptor): a novel approach to retrieval-augmented language models by constructing a recursive tree structure from documents.
 
 ## Cite Us
-```
+```python
 @misc{huang2025hiragretrievalaugmentedgenerationhierarchical,
       title={HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge}, 
       author={Haoyu Huang and Yongfeng Huang and Junjie Yang and Zhenyu Pan and Yongqiang Chen and Kaili Ma and Hongzhi Chen and James Cheng},
