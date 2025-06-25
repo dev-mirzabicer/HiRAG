@@ -251,13 +251,10 @@ We gratefully acknowledge the use of the following open-source projects in our w
 
 ## Cite Us
 ```python
-@misc{huang2025hiragretrievalaugmentedgenerationhierarchical,
-      title={HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge}, 
-      author={Haoyu Huang and Yongfeng Huang and Junjie Yang and Zhenyu Pan and Yongqiang Chen and Kaili Ma and Hongzhi Chen and James Cheng},
-      year={2025},
-      eprint={2503.10150},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL},
-      url={https://arxiv.org/abs/2503.10150}, 
+@article{huang2025retrieval,
+  title={Retrieval-Augmented Generation with Hierarchical Knowledge},
+  author={Huang, Haoyu and Huang, Yongfeng and Yang, Junjie and Pan, Zhenyu and Chen, Yongqiang and Ma, Kaili and Chen, Hongzhi and Cheng, James},
+  journal={arXiv preprint arXiv:2503.10150},
+  year={2025}
 }
 ```
