@@ -18,10 +18,17 @@ deepseek:
   api_key: "***"
   base_url: "https://api.deepseek.com"
 
+# Google Configuration
+google:
+  model: "gemini-pro"
+  api_key: "your_google_api_key"
+  embedding_model: "embedding-001"
+
 # Model Parameters
 model_params:
   openai_embedding_dim: 1536
   glm_embedding_dim: 2048
+  google_embedding_dim: 768
   max_token_size: 8192
 
 # HiRAG Configuration
