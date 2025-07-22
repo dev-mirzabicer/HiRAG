@@ -1,6 +1,7 @@
 import numpy as np
 
-import google.genai as genai
+from google import genai
+from google.genai import types
 from openai import AsyncOpenAI, AsyncAzureOpenAI, APIConnectionError, RateLimitError
 from google.api_core import exceptions as google_exceptions
 
@@ -19,10 +20,14 @@ global_azure_openai_async_client = None
 global_gemini_async_client = None
 
 
-def get_gemini_async_client_instance():
+def get_gemini_async_client_instance(api_key=None):
+    """Get or create a Gemini async client instance using the new google-genai SDK."""
     global global_gemini_async_client
     if global_gemini_async_client is None:
-        global_gemini_async_client = genai.GenerativeModel
+        if api_key:
+            global_gemini_async_client = genai.Client(api_key=api_key)
+        else:
+            global_gemini_async_client = genai.Client()
     return global_gemini_async_client
 
 
@@ -50,17 +55,27 @@ def get_azure_openai_async_client_instance():
 async def gemini_complete_if_cache(
     model, prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
-    gemini_async_client = get_gemini_async_client_instance()(model_name=model)
+    gemini_client = get_gemini_async_client_instance()
     hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
 
+    # Prepare contents in the new format
     contents = []
     if history_messages:
         contents.extend(history_messages)
-    contents.append({"role": "user", "parts": [prompt]})
+    contents.append(prompt)
 
-    generation_config = {}
+    # Prepare config for the new API
+    config_params = {}
+    if system_prompt:
+        config_params["system_instruction"] = system_prompt
+
     if "max_tokens" in kwargs:
-        generation_config["max_output_tokens"] = kwargs.pop("max_tokens")
+        config_params["max_output_tokens"] = kwargs.pop("max_tokens")
+
+    # Add any remaining kwargs to config
+    for key, value in kwargs.items():
+        if key not in ["hashing_kv"]:
+            config_params[key] = value
 
     if hashing_kv is not None:
         args_hash = compute_args_hash(model, contents, system_prompt)
@@ -68,11 +83,11 @@ async def gemini_complete_if_cache(
         if if_cache_return is not None:
             return if_cache_return["return"]
 
-    response = await gemini_async_client.generate_content_async(
+    # Use the new async API structure
+    response = await gemini_client.aio.models.generate_content(
+        model=model,
         contents=contents,
-        system_instruction=system_prompt,
-        generation_config=generation_config,
-        **kwargs,
+        config=types.GenerateContentConfig(**config_params) if config_params else None,
     )
 
     if hashing_kv is not None:
@@ -197,12 +212,19 @@ async def gemini_flash_complete(
     ),
 )
 async def gemini_embedding(texts: list[str]) -> np.ndarray:
-    response = await genai.embed_content_async(
+    """Generate embeddings using the new google-genai SDK."""
+    gemini_client = get_gemini_async_client_instance()
+
+    # Use the new embedding API
+    response = await gemini_client.aio.models.embed_content(
         model="gemini-embedding-exp-03-07",
-        content=texts,
-        task_type="retrieval_document",
+        contents=texts,
+        config=types.EmbedContentConfig(task_type="retrieval_document"),
     )
-    return np.array(response["embedding"])
+
+    # Extract embeddings from the response
+    embeddings = [embedding.values for embedding in response.embeddings]
+    return np.array(embeddings)
 
 
 @retry(

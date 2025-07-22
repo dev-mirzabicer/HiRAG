@@ -20,5 +20,4 @@ transformers==4.47.1
 umap_learn==0.5.6
 xxhash==3.5.0
 future==1.0.0
-
-google-genai
+google-genai==1.26.0
