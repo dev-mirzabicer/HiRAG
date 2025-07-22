@@ -10,7 +10,6 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-import os
 
 from ._utils import compute_args_hash, wrap_embedding_func_with_attrs
 from .base import BaseKVStorage
