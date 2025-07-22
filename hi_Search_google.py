@@ -69,8 +69,10 @@ async def google_model_if_cache(
     # Prepare contents in the new format
     contents = []
     if history_messages:
-        contents.extend(history_messages)
-    contents.append(prompt)
+        for msg in history_messages:
+            role = "model" if msg["role"] == "assistant" else msg["role"]
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
 
     if hashing_kv is not None:
         args_hash = compute_args_hash(MODEL, contents, system_prompt)
@@ -85,10 +87,17 @@ async def google_model_if_cache(
         if system_prompt:
             config_params["system_instruction"] = system_prompt
 
+        if "response_format" in kwargs:
+            if kwargs["response_format"]["type"] == "json_object":
+                config_params["response_mime_type"] = "application/json"
+
         # Add any remaining kwargs to config
         for key, value in kwargs.items():
-            if key not in ["hashing_kv"]:
-                config_params[key] = value
+            if key not in ["hashing_kv", "response_format"]:
+                if key == "max_tokens":
+                    config_params["max_output_tokens"] = value
+                else:
+                    config_params[key] = value
 
         # Use the new async API structure
         response = await client.aio.models.generate_content(
@@ -125,12 +134,8 @@ graph_func = HiRAG(
 )
 
 # comment this if the working directory has already been indexed
-with open("your .txt file path") as f:
+with open("./asd.txt") as f:
     graph_func.insert(f.read())
 
 print("Perform hi search:")
-print(
-    graph_func.query(
-        "What are the top themes in this story?", param=QueryParam(mode="hi")
-    )
-)
+print(graph_func.query("What does this text talk about?", param=QueryParam(mode="hi")))

@@ -28,7 +28,7 @@ google:
 model_params:
   openai_embedding_dim: 1536
   glm_embedding_dim: 2048
-  google_embedding_dim: 768
+  google_embedding_dim: 3072
   max_token_size: 8192
 
 # HiRAG Configuration
