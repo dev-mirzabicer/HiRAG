@@ -20,9 +20,9 @@ deepseek:
 
 # Google Configuration
 google:
-  model: "gemini-pro"
-  api_key: "your_google_api_key"
-  embedding_model: "embedding-001"
+  model: "gemini-2.5-pro"
+  api_key: "***"
+  embedding_model: "gemini-embedding-exp-03-07"
 
 # Model Parameters
 model_params:
