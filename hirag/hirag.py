@@ -16,6 +16,9 @@ from ._llm import (
     azure_gpt_4o_complete,
     azure_openai_embedding,
     azure_gpt_4o_mini_complete,
+    gemini_pro_complete,
+    gemini_flash_complete,
+    gemini_embedding,
 )
 from ._op import (
     chunking_by_token_size,
@@ -113,6 +116,7 @@ class HiRAG:
 
     # LLM
     using_azure_openai: bool = False
+    using_gemini: bool = False
     # best_model_func: callable = gpt_35_turbo_complete
     best_model_func: callable = gpt_4o_mini_complete
     best_model_max_token_size: int = 32768
@@ -152,6 +156,12 @@ class HiRAG:
             logger.info(
                 "Switched the default openai funcs to Azure OpenAI if you didn't set any of it"
             )
+
+        if self.using_gemini:
+            logger.info("Using Gemini models")
+            self.best_model_func = gemini_pro_complete
+            self.cheap_model_func = gemini_flash_complete
+            self.embedding_func = gemini_embedding
 
         if not os.path.exists(self.working_dir) and self.always_create_working_dir:
             logger.info(f"Creating working directory {self.working_dir}")
@@ -222,17 +232,27 @@ class HiRAG:
         if param.mode == "naive" and not self.enable_naive_rag:
             raise ValueError("enable_naive_rag is False, cannot query in naive mode")
         if param.mode == "hi" and not self.enable_hierachical_mode:
-            raise ValueError("enable_hierachical_mode is False, cannot query in hierarchical mode")
+            raise ValueError(
+                "enable_hierachical_mode is False, cannot query in hierarchical mode"
+            )
         if param.mode == "hi_nobridge" and not self.enable_hierachical_mode:
-            raise ValueError("enable_hierachical_mode is False, cannot query in hierarchical_nobridge mode")
+            raise ValueError(
+                "enable_hierachical_mode is False, cannot query in hierarchical_nobridge mode"
+            )
         if param.mode == "hi_bridge" and not self.enable_hierachical_mode:
-            raise ValueError("enable_hierachical_mode is False, cannot query in hierarchical_bridge mode")
+            raise ValueError(
+                "enable_hierachical_mode is False, cannot query in hierarchical_bridge mode"
+            )
         if param.mode == "hi_local" and not self.enable_hierachical_mode:
-            raise ValueError("enable_hierachical_mode is False, cannot query in hierarchical_local mode")
+            raise ValueError(
+                "enable_hierachical_mode is False, cannot query in hierarchical_local mode"
+            )
         if param.mode == "hi_global" and not self.enable_hierachical_mode:
-            raise ValueError("enable_hierachical_mode is False, cannot query in hierarchical_global mode")
+            raise ValueError(
+                "enable_hierachical_mode is False, cannot query in hierarchical_global mode"
+            )
 
-        if param.mode == "hi":                        # retrieve with hierarchical knowledge
+        if param.mode == "hi":  # retrieve with hierarchical knowledge
             response = await hierarchical_query(
                 query,
                 self.chunk_entity_relation_graph,
@@ -242,7 +262,7 @@ class HiRAG:
                 param,
                 asdict(self),
             )
-        elif param.mode == "hi_bridge":                 # retrieve with only bridge knowledge
+        elif param.mode == "hi_bridge":  # retrieve with only bridge knowledge
             response = await hierarchical_bridge_query(
                 query,
                 self.chunk_entity_relation_graph,
@@ -252,7 +272,7 @@ class HiRAG:
                 param,
                 asdict(self),
             )
-        elif param.mode == "hi_local":                  # retrieve with only local knowledge
+        elif param.mode == "hi_local":  # retrieve with only local knowledge
             response = await hierarchical_local_query(
                 query,
                 self.chunk_entity_relation_graph,
@@ -262,7 +282,7 @@ class HiRAG:
                 param,
                 asdict(self),
             )
-        elif param.mode == "hi_global":                 # retrieve with only global knowledge
+        elif param.mode == "hi_global":  # retrieve with only global knowledge
             response = await hierarchical_global_query(
                 query,
                 self.chunk_entity_relation_graph,
@@ -272,7 +292,7 @@ class HiRAG:
                 param,
                 asdict(self),
             )
-        elif param.mode == "hi_nobridge":               # retrieve with no bridge knowledge
+        elif param.mode == "hi_nobridge":  # retrieve with no bridge knowledge
             response = await hierarchical_nobridge_query(
                 query,
                 self.chunk_entity_relation_graph,
@@ -282,7 +302,7 @@ class HiRAG:
                 param,
                 asdict(self),
             )
-        elif param.mode == "naive":                     # retrieve with only text units
+        elif param.mode == "naive":  # retrieve with only text units
             response = await naive_query(
                 query,
                 self.chunks_vdb,
@@ -301,14 +321,16 @@ class HiRAG:
             if isinstance(string_or_strings, str):
                 string_or_strings = [string_or_strings]
             # ---------- new docs
-            new_docs = {    # dict: {hash: ori_content}
+            new_docs = {  # dict: {hash: ori_content}
                 compute_mdhash_id(c.strip(), prefix="doc-"): {"content": c.strip()}
                 for c in string_or_strings
             }
-            _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))     # filter the docs that has already in the storage.
+            _add_doc_keys = await self.full_docs.filter_keys(
+                list(new_docs.keys())
+            )  # filter the docs that has already in the storage.
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
             if not len(new_docs):
-                logger.warning(f"All docs are already in the storage")
+                logger.warning("All docs are already in the storage")
                 return
             logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
@@ -336,7 +358,7 @@ class HiRAG:
                 await self.chunks_vdb.upsert(inserting_chunks)
 
             # TODO: no incremental update for communities now, so just drop all
-            await self.community_reports.drop()                             # empty the data
+            await self.community_reports.drop()  # empty the data
 
             # ---------- extract/summary entity and upsert to graph
             if not self.enable_hierachical_mode:
@@ -362,7 +384,7 @@ class HiRAG:
             # ---------- update clusterings of graph
             logger.info("[Community Report]...")
             await self.chunk_entity_relation_graph.clustering(
-                self.graph_cluster_algorithm                    # use leiden
+                self.graph_cluster_algorithm  # use leiden
             )
             await generate_community_report(
                 self.community_reports, self.chunk_entity_relation_graph, asdict(self)
