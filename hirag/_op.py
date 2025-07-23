@@ -52,20 +52,18 @@ def chunking_by_token_size(
     overlap_token_size=128,
     max_token_size=1024,
 ):
-  # tokenizer
+    # tokenizer
     results = []
     for index, tokens in enumerate(tokens_list):
         chunk_token = []
         lengths = []
         for start in range(0, len(tokens), max_token_size - overlap_token_size):
-
             chunk_token.append(tokens[start : start + max_token_size])
             lengths.append(min(max_token_size, len(tokens) - start))
 
         # here somehow tricky, since the whole chunk tokens is list[list[list[int]]] for corpus(doc(chunk)),so it can't be decode entirely
         chunk_token = tiktoken_model.decode_batch(chunk_token)
         for i, chunk in enumerate(chunk_token):
-
             results.append(
                 {
                     "tokens": lengths[i],
@@ -85,7 +83,6 @@ def chunking_by_seperators(
     overlap_token_size=128,
     max_token_size=1024,
 ):
-
     splitter = SeparatorSplitter(
         separators=[
             tiktoken_model.encode(s) for s in PROMPTS["default_text_separator"]
@@ -101,7 +98,6 @@ def chunking_by_seperators(
         # here somehow tricky, since the whole chunk tokens is list[list[list[int]]] for corpus(doc(chunk)),so it can't be decode entirely
         chunk_token = tiktoken_model.decode_batch(chunk_token)
         for i, chunk in enumerate(chunk_token):
-
             results.append(
                 {
                     "tokens": lengths[i],
@@ -173,20 +169,29 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    # The tuple now has 5 elements: ("entity", name, type, desc, is_temporary)
+    if len(record_attributes) < 5 or record_attributes[0] != '"entity"':
         return None
-    # add this record as a node in the G
+
     entity_name = clean_str(record_attributes[1].upper())
     if not entity_name.strip():
         return None
-    entity_type = clean_str(record_attributes[2].upper())
+    entity_type = clean_str(
+        record_attributes[2].lower()
+    )  # Standardize to lowercase for consistency
     entity_description = clean_str(record_attributes[3])
+
+    # Parse the new 'is_temporary' field
+    is_temporary_str = clean_str(record_attributes[4].lower())
+    is_temporary = is_temporary_str == "true"
+
     entity_source_id = chunk_key
     return dict(
         entity_name=entity_name,
         entity_type=entity_type,
         description=entity_description,
         source_id=entity_source_id,
+        is_temporary=is_temporary,  # Add the new property to the dictionary
     )
 
 
@@ -223,13 +228,23 @@ async def _merge_nodes_then_upsert(
     already_source_ids = []
     already_description = []
 
+    existing_is_temporary = False
+
     already_node = await knwoledge_graph_inst.get_node(entity_name)
-    if already_node is not None:                                            # already exist
+    if already_node is not None:  # already exist
         already_entitiy_types.append(already_node["entity_type"])
         already_source_ids.extend(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
         already_description.append(already_node["description"])
+        existing_is_temporary = already_node.get("is_temporary", False)
+
+    new_temporary_guesses = [dp.get("is_temporary", False) for dp in nodes_data]
+
+    is_temporary_true_count = sum(1 for guess in new_temporary_guesses if guess is True)
+    is_temporary_true_count += 1 if existing_is_temporary else 0
+    total_count = len(new_temporary_guesses) + 1
+    final_is_temporary = is_temporary_true_count / total_count > 0.9
 
     entity_type = sorted(
         Counter(
@@ -251,6 +266,7 @@ async def _merge_nodes_then_upsert(
         entity_type=entity_type,
         description=description,
         source_id=source_id,
+        is_temporary=final_is_temporary,
     )
     await knwoledge_graph_inst.upsert_node(
         entity_name,
@@ -310,6 +326,7 @@ async def _merge_edges_then_upsert(
         ),
     )
 
+
 # TODO:
 # extract entities with normal and attribute entities
 async def extract_hierarchical_entities(
@@ -317,7 +334,7 @@ async def extract_hierarchical_entities(
     knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
     global_config: dict,
-)-> Union[BaseGraphStorage, None]:
+) -> Union[BaseGraphStorage, None]:
     """Extract entities and relations from text chunks
 
     Args:
@@ -333,49 +350,68 @@ async def extract_hierarchical_entities(
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
     ordered_chunks = list(chunks.items())
-    entity_extract_prompt = PROMPTS["hi_entity_extraction"]        # give 3 examples in the prompt context
+    entity_extract_prompt = PROMPTS[
+        "hi_entity_extraction"
+    ]  # give 3 examples in the prompt context
     relation_extract_prompt = PROMPTS["hi_relation_extraction"]
 
     context_base_entity = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(PROMPTS["META_ENTITY_TYPES"])
+        entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
     )
-    continue_prompt = PROMPTS["entiti_continue_extraction"]     # means low quality in the last extraction
-    if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]       # judge if there are still entities still need to be extracted
+    continue_prompt = PROMPTS[
+        "entiti_continue_extraction"
+    ]  # means low quality in the last extraction
+    if_loop_prompt = PROMPTS[
+        "entiti_if_loop_extraction"
+    ]  # judge if there are still entities still need to be extracted
 
     already_processed = 0
     already_entities = 0
     already_relations = 0
 
-    async def _process_single_content_entity(chunk_key_dp: tuple[str, TextChunkSchema]):           # for each chunk, run the func
+    async def _process_single_content_entity(
+        chunk_key_dp: tuple[str, TextChunkSchema],
+    ):  # for each chunk, run the func
         nonlocal already_processed, already_entities, already_relations
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
-        hint_prompt = entity_extract_prompt.format(**context_base_entity, input_text=content)      # fill in the parameter
-        final_result = await use_llm_func(hint_prompt)                                      # feed into LLM with the prompt
+        hint_prompt = entity_extract_prompt.format(
+            **context_base_entity, input_text=content
+        )  # fill in the parameter
+        final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
 
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)               # set as history
+        history = pack_user_ass_to_openai_messages(
+            hint_prompt, final_result
+        )  # set as history
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
 
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)      # add to history
+            history += pack_user_ass_to_openai_messages(
+                continue_prompt, glean_result
+            )  # add to history
             final_result += glean_result
             if now_glean_index == entity_extract_max_gleaning - 1:
                 break
 
-            if_loop_result: str = await use_llm_func(                                       # judge if we still need the next iteration
-                if_loop_prompt, history_messages=history
+            if_loop_result: str = (
+                await use_llm_func(  # judge if we still need the next iteration
+                    if_loop_prompt, history_messages=history
+                )
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
 
-        records = split_string_by_multi_markers(                                            # split entities from result --> list of entities
+        records = split_string_by_multi_markers(  # split entities from result --> list of entities
             final_result,
-            [context_base_entity["record_delimiter"], context_base_entity["completion_delimiter"]],
+            [
+                context_base_entity["record_delimiter"],
+                context_base_entity["completion_delimiter"],
+            ],
         )
         # resolve the entities
         maybe_nodes = defaultdict(list)
@@ -385,10 +421,10 @@ async def extract_hierarchical_entities(
             if record is None:
                 continue
             record = record.group(1)
-            record_attributes = split_string_by_multi_markers(          # split entity
+            record_attributes = split_string_by_multi_markers(  # split entity
                 record, [context_base_entity["tuple_delimiter"]]
             )
-            if_entities = await _handle_single_entity_extraction(       # get the name, type, desc, source_id of entity--> dict
+            if_entities = await _handle_single_entity_extraction(  # get the name, type, desc, source_id of entity--> dict
                 record_attributes, chunk_key
             )
             if if_entities is not None:
@@ -402,19 +438,19 @@ async def extract_hierarchical_entities(
                 maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
                     if_relation
                 )
-        already_processed += 1                                      # already processed chunks
+        already_processed += 1  # already processed chunks
         already_entities += len(maybe_nodes)
         already_relations += len(maybe_edges)
-        now_ticks = PROMPTS["process_tickers"][                     # for visualization
+        now_ticks = PROMPTS["process_tickers"][  # for visualization
             already_processed % len(PROMPTS["process_tickers"])
         ]
         print(
-            f"{now_ticks} Processed {already_processed}({already_processed*100//len(ordered_chunks)}%) chunks,  {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
+            f"{now_ticks} Processed {already_processed}({already_processed * 100 // len(ordered_chunks)}%) chunks,  {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
             end="",
             flush=True,
         )
         return dict(maybe_nodes), dict(maybe_edges)
-    
+
     # extract entities
     # use_llm_func is wrapped in ascynio.Semaphore, limiting max_async callings
     entity_results = await asyncio.gather(
@@ -428,13 +464,17 @@ async def extract_hierarchical_entities(
         for k, v in item[0].items():
             value = v[0]
             all_entities[k] = v[0]
-    context_entities = {key[0]: list(x[0].keys()) for key, x in zip(ordered_chunks, entity_results)}
-    
+    context_entities = {
+        key[0]: list(x[0].keys()) for key, x in zip(ordered_chunks, entity_results)
+    }
+
     # fetch embeddings
     entity_discriptions = [v["description"] for k, v in all_entities.items()]
     entity_sequence_embeddings = []
     embeddings_batch_size = 64
-    num_embeddings_batches = (len(entity_discriptions) + embeddings_batch_size - 1) // embeddings_batch_size
+    num_embeddings_batches = (
+        len(entity_discriptions) + embeddings_batch_size - 1
+    ) // embeddings_batch_size
     for i in range(num_embeddings_batches):
         start_index = i * embeddings_batch_size
         end_index = min((i + 1) * embeddings_batch_size, len(entity_discriptions))
@@ -446,9 +486,12 @@ async def extract_hierarchical_entities(
         value = v
         value["embedding"] = x
         all_entities[k] = value
-    
+
     already_processed = 0
-    async def _process_single_content_relation(chunk_key_dp: tuple[str, TextChunkSchema]):           # for each chunk, run the func
+
+    async def _process_single_content_relation(
+        chunk_key_dp: tuple[str, TextChunkSchema],
+    ):  # for each chunk, run the func
         nonlocal already_processed, already_entities, already_relations
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
@@ -459,30 +502,41 @@ async def extract_hierarchical_entities(
             tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
             record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
             completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-            entities=",".join(entities)
-            )
-        hint_prompt = relation_extract_prompt.format(**context_base_relation, input_text=content)      # fill in the parameter
-        final_result = await use_llm_func(hint_prompt)                                      # feed into LLM with the prompt
+            entities=",".join(entities),
+        )
+        hint_prompt = relation_extract_prompt.format(
+            **context_base_relation, input_text=content
+        )  # fill in the parameter
+        final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
 
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)               # set as history
+        history = pack_user_ass_to_openai_messages(
+            hint_prompt, final_result
+        )  # set as history
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
 
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)      # add to history
+            history += pack_user_ass_to_openai_messages(
+                continue_prompt, glean_result
+            )  # add to history
             final_result += glean_result
             if now_glean_index == entity_extract_max_gleaning - 1:
                 break
 
-            if_loop_result: str = await use_llm_func(                                       # judge if we still need the next iteration
-                if_loop_prompt, history_messages=history
+            if_loop_result: str = (
+                await use_llm_func(  # judge if we still need the next iteration
+                    if_loop_prompt, history_messages=history
+                )
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
 
-        records = split_string_by_multi_markers(                                            # split entities from result --> list of entities
+        records = split_string_by_multi_markers(  # split entities from result --> list of entities
             final_result,
-            [context_base_relation["record_delimiter"], context_base_relation["completion_delimiter"]],
+            [
+                context_base_relation["record_delimiter"],
+                context_base_relation["completion_delimiter"],
+            ],
         )
         # resolve the entities
         maybe_nodes = defaultdict(list)
@@ -492,10 +546,10 @@ async def extract_hierarchical_entities(
             if record is None:
                 continue
             record = record.group(1)
-            record_attributes = split_string_by_multi_markers(          # split entity
+            record_attributes = split_string_by_multi_markers(  # split entity
                 record, [context_base_relation["tuple_delimiter"]]
             )
-            if_entities = await _handle_single_entity_extraction(       # get the name, type, desc, source_id of entity--> dict
+            if_entities = await _handle_single_entity_extraction(  # get the name, type, desc, source_id of entity--> dict
                 record_attributes, chunk_key
             )
             if if_entities is not None:
@@ -509,14 +563,14 @@ async def extract_hierarchical_entities(
                 maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
                     if_relation
                 )
-        already_processed += 1                                      # already processed chunks
+        already_processed += 1  # already processed chunks
         already_entities += len(maybe_nodes)
         already_relations += len(maybe_edges)
-        now_ticks = PROMPTS["process_tickers"][                     # for visualization
+        now_ticks = PROMPTS["process_tickers"][  # for visualization
             already_processed % len(PROMPTS["process_tickers"])
         ]
         print(
-            f"{now_ticks} Processed {already_processed}({already_processed*100//len(ordered_chunks)}%) chunks,  {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
+            f"{now_ticks} Processed {already_processed}({already_processed * 100 // len(ordered_chunks)}%) chunks,  {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
             end="",
             flush=True,
         )
@@ -534,15 +588,25 @@ async def extract_hierarchical_entities(
     for item in relation_results:
         for k, v in item[1].items():
             all_relations[k] = v
-    
+
     # TODO: hierarchical clustering
     logger.info(f"[Hierarchical Clustering]")
     hierarchical_cluster = Hierarchical_Clustering()
-    hierarchical_clustered_entities_relations = await hierarchical_cluster.perform_clustering(entity_vdb=entity_vdb, global_config=global_config, entities=all_entities)
-    hierarchical_clustered_entities = [[x for x in y if "entity_name" in x.keys()] for y in hierarchical_clustered_entities_relations]
-    hierarchical_clustered_relations = [[x for x in y if "src_id" in x.keys()] for y in hierarchical_clustered_entities_relations]
-    
-    maybe_nodes = defaultdict(list)                     # for all chunks
+    hierarchical_clustered_entities_relations = (
+        await hierarchical_cluster.perform_clustering(
+            entity_vdb=entity_vdb, global_config=global_config, entities=all_entities
+        )
+    )
+    hierarchical_clustered_entities = [
+        [x for x in y if "entity_name" in x.keys()]
+        for y in hierarchical_clustered_entities_relations
+    ]
+    hierarchical_clustered_relations = [
+        [x for x in y if "src_id" in x.keys()]
+        for y in hierarchical_clustered_entities_relations
+    ]
+
+    maybe_nodes = defaultdict(list)  # for all chunks
     maybe_edges = defaultdict(list)
     # extracted entities and relations
     for m_nodes, m_edges in zip(entity_results, relation_results):
@@ -554,20 +618,20 @@ async def extract_hierarchical_entities(
     # clustered entities
     for cluster_layer in hierarchical_clustered_entities:
         for item in cluster_layer:
-            maybe_nodes[item['entity_name']].extend([item])
+            maybe_nodes[item["entity_name"]].extend([item])
     # clustered relations
     for cluster_layer in hierarchical_clustered_relations:
         for item in cluster_layer:
             maybe_edges[tuple(sorted((item["src_id"], item["tgt_id"])))].extend([item])
     # store the nodes
-    all_entities_data = await asyncio.gather(           
+    all_entities_data = await asyncio.gather(
         *[
             _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
             for k, v in maybe_nodes.items()
         ]
     )
     # store the edges
-    await asyncio.gather(                               
+    await asyncio.gather(
         *[
             _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
             for k, v in maybe_edges.items()
@@ -577,15 +641,19 @@ async def extract_hierarchical_entities(
         logger.warning("Didn't extract any entities, maybe your LLM is not working")
         return None
     if entity_vdb is not None:
-        data_for_vdb = {                                # key is the md5 hash of the entity name string
+        data_for_vdb = {  # key is the md5 hash of the entity name string
             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                "content": dp["entity_name"] + dp["description"],   # entity name and description construct the content
+                "content": dp["entity_name"]
+                + dp[
+                    "description"
+                ],  # entity name and description construct the content
                 "entity_name": dp["entity_name"],
             }
             for dp in all_entities_data
         }
         await entity_vdb.upsert(data_for_vdb)
     return knowledge_graph_inst
+
 
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
@@ -596,47 +664,63 @@ async def extract_entities(
     use_llm_func: callable = global_config["best_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
-    ordered_chunks = list(chunks.items())                       # chunks
+    ordered_chunks = list(chunks.items())  # chunks
 
-    entity_extract_prompt = PROMPTS["entity_extraction"]        # give 3 examples in the prompt context
+    entity_extract_prompt = PROMPTS[
+        "entity_extraction"
+    ]  # give 3 examples in the prompt context
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
     )
-    continue_prompt = PROMPTS["entiti_continue_extraction"]     # means low quality in the last extraction
-    if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]       # judge if there are still entities still need to be extracted
+    continue_prompt = PROMPTS[
+        "entiti_continue_extraction"
+    ]  # means low quality in the last extraction
+    if_loop_prompt = PROMPTS[
+        "entiti_if_loop_extraction"
+    ]  # judge if there are still entities still need to be extracted
 
     already_processed = 0
     already_entities = 0
     already_relations = 0
 
-    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):           # for each chunk, run the func
+    async def _process_single_content(
+        chunk_key_dp: tuple[str, TextChunkSchema],
+    ):  # for each chunk, run the func
         nonlocal already_processed, already_entities, already_relations
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
-        hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)      # fill in the parameter
-        final_result = await use_llm_func(hint_prompt)                                      # feed into LLM with the prompt
+        hint_prompt = entity_extract_prompt.format(
+            **context_base, input_text=content
+        )  # fill in the parameter
+        final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
 
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)               # set as history
+        history = pack_user_ass_to_openai_messages(
+            hint_prompt, final_result
+        )  # set as history
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
 
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)      # add to history
+            history += pack_user_ass_to_openai_messages(
+                continue_prompt, glean_result
+            )  # add to history
             final_result += glean_result
             if now_glean_index == entity_extract_max_gleaning - 1:
                 break
 
-            if_loop_result: str = await use_llm_func(                                       # judge if we still need the next iteration
-                if_loop_prompt, history_messages=history
+            if_loop_result: str = (
+                await use_llm_func(  # judge if we still need the next iteration
+                    if_loop_prompt, history_messages=history
+                )
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
 
-        records = split_string_by_multi_markers(                                            # split entities from result --> list of entities
+        records = split_string_by_multi_markers(  # split entities from result --> list of entities
             final_result,
             [context_base["record_delimiter"], context_base["completion_delimiter"]],
         )
@@ -648,10 +732,10 @@ async def extract_entities(
             if record is None:
                 continue
             record = record.group(1)
-            record_attributes = split_string_by_multi_markers(          # split entity
+            record_attributes = split_string_by_multi_markers(  # split entity
                 record, [context_base["tuple_delimiter"]]
             )
-            if_entities = await _handle_single_entity_extraction(       # get the name, type, desc, source_id of entity--> dict
+            if_entities = await _handle_single_entity_extraction(  # get the name, type, desc, source_id of entity--> dict
                 record_attributes, chunk_key
             )
             if if_entities is not None:
@@ -665,14 +749,14 @@ async def extract_entities(
                 maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
                     if_relation
                 )
-        already_processed += 1                                      # already processed chunks
+        already_processed += 1  # already processed chunks
         already_entities += len(maybe_nodes)
         already_relations += len(maybe_edges)
-        now_ticks = PROMPTS["process_tickers"][                     # for visualization
+        now_ticks = PROMPTS["process_tickers"][  # for visualization
             already_processed % len(PROMPTS["process_tickers"])
         ]
         print(
-            f"{now_ticks} Processed {already_processed}({already_processed*100//len(ordered_chunks)}%) chunks,  {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
+            f"{now_ticks} Processed {already_processed}({already_processed * 100 // len(ordered_chunks)}%) chunks,  {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
             end="",
             flush=True,
         )
@@ -683,7 +767,7 @@ async def extract_entities(
         *[_process_single_content(c) for c in ordered_chunks]
     )
     print()  # clear the progress bar
-    maybe_nodes = defaultdict(list)                     # for all chunks
+    maybe_nodes = defaultdict(list)  # for all chunks
     maybe_edges = defaultdict(list)
     for m_nodes, m_edges in results:
         for k, v in m_nodes.items():
@@ -691,13 +775,13 @@ async def extract_entities(
         for k, v in m_edges.items():
             # it's undirected graph
             maybe_edges[tuple(sorted(k))].extend(v)
-    all_entities_data = await asyncio.gather(           # store the nodes
+    all_entities_data = await asyncio.gather(  # store the nodes
         *[
             _merge_nodes_then_upsert(k, v, knwoledge_graph_inst, global_config)
             for k, v in maybe_nodes.items()
         ]
     )
-    await asyncio.gather(                               # store the edges
+    await asyncio.gather(  # store the edges
         *[
             _merge_edges_then_upsert(k[0], k[1], v, knwoledge_graph_inst, global_config)
             for k, v in maybe_edges.items()
@@ -707,9 +791,12 @@ async def extract_entities(
         logger.warning("Didn't extract any entities, maybe your LLM is not working")
         return None
     if entity_vdb is not None:
-        data_for_vdb = {                                # key is the md5 hash of the entity name string
+        data_for_vdb = {  # key is the md5 hash of the entity name string
             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                "content": dp["entity_name"] + dp["description"],   # entity name and description construct the content
+                "content": dp["entity_name"]
+                + dp[
+                    "description"
+                ],  # entity name and description construct the content
                 "entity_name": dp["entity_name"],
             }
             for dp in all_entities_data
@@ -904,8 +991,9 @@ async def generate_community_report(
     community_report_prompt = PROMPTS["community_report"]
 
     communities_schema = await knwoledge_graph_inst.community_schema()
-    community_keys, community_values = list(communities_schema.keys()), list(
-        communities_schema.values()
+    community_keys, community_values = (
+        list(communities_schema.keys()),
+        list(communities_schema.values()),
     )
     already_processed = 0
 
@@ -985,7 +1073,7 @@ async def _find_most_related_community_from_entities(
         if dp["level"] <= query_param.level
     ]
     related_community_keys_counts = dict(Counter(related_community_dup_keys))
-    _related_community_datas = await asyncio.gather(        # get community reports
+    _related_community_datas = await asyncio.gather(  # get community reports
         *[community_reports.get_by_id(k) for k in related_community_keys_counts.keys()]
     )
     related_community_datas = {
@@ -993,7 +1081,7 @@ async def _find_most_related_community_from_entities(
         for k, v in zip(related_community_keys_counts.keys(), _related_community_datas)
         if v is not None
     }
-    related_community_keys = sorted(            # sort by ratings
+    related_community_keys = sorted(  # sort by ratings
         related_community_keys_counts.keys(),
         key=lambda k: (
             related_community_keys_counts[k],
@@ -1001,11 +1089,11 @@ async def _find_most_related_community_from_entities(
         ),
         reverse=True,
     )
-    sorted_community_datas = [                  # community reports sorted by ratings
+    sorted_community_datas = [  # community reports sorted by ratings
         related_community_datas[k] for k in related_community_keys
     ]
 
-    use_community_reports = truncate_list_by_token_size(    # in case community reprot is longer than token limitation
+    use_community_reports = truncate_list_by_token_size(  # in case community reprot is longer than token limitation
         sorted_community_datas,
         key=lambda x: x["report_string"],
         max_token_size=query_param.max_token_for_community_report,
@@ -1021,14 +1109,14 @@ async def _find_most_related_text_unit_from_entities(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     knowledge_graph_inst: BaseGraphStorage,
 ):
-    text_units = [      # the entities related to the retrieved entities
+    text_units = [  # the entities related to the retrieved entities
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in node_datas
     ]
-    edges = await asyncio.gather(   # get relations related to the retrieved entities
+    edges = await asyncio.gather(  # get relations related to the retrieved entities
         *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
-    )                               # where the source entities are the retrieved entities
-    all_one_hop_nodes = set()       # find the one hop neighbors
+    )  # where the source entities are the retrieved entities
+    all_one_hop_nodes = set()  # find the one hop neighbors
     for this_edges in edges:
         if not this_edges:
             continue
@@ -1037,7 +1125,7 @@ async def _find_most_related_text_unit_from_entities(
     all_one_hop_nodes_data = await asyncio.gather(  # get node information from storage
         *[knowledge_graph_inst.get_node(e) for e in all_one_hop_nodes]
     )
-    all_one_hop_text_units_lookup = {               # find the text chunks of the 1-hop neighbors entities
+    all_one_hop_text_units_lookup = {  # find the text chunks of the 1-hop neighbors entities
         k: set(split_string_by_multi_markers(v["source_id"], [GRAPH_FIELD_SEP]))
         for k, v in zip(all_one_hop_nodes, all_one_hop_nodes_data)
         if v is not None
@@ -1057,14 +1145,14 @@ async def _find_most_related_text_unit_from_entities(
             all_text_units_lookup[c_id] = {
                 "data": await text_chunks_db.get_by_id(c_id),
                 "order": index,
-                "relation_counts": relation_counts,     # count of relations related to the chunk
+                "relation_counts": relation_counts,  # count of relations related to the chunk
             }
     if any([v is None for v in all_text_units_lookup.values()]):
         logger.warning("Text chunks are missing, maybe the storage is damaged")
     all_text_units = [
         {"id": k, **v} for k, v in all_text_units_lookup.items() if v is not None
     ]
-    all_text_units = sorted(        # sort by relation counts
+    all_text_units = sorted(  # sort by relation counts
         all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
     )
     all_text_units = truncate_list_by_token_size(
@@ -1157,7 +1245,9 @@ async def _build_local_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    results = await entities_vdb.query(query, top_k=query_param.top_k)          # find the top-k(20) related entities
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k
+    )  # find the top-k(20) related entities
     if not len(results):
         return None
     node_datas = await asyncio.gather(
@@ -1251,28 +1341,32 @@ async def _build_hierarchical_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    results = await entities_vdb.query(query, top_k=query_param.top_k * 10)          # find the top-k(20) related entities
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k * 10
+    )  # find the top-k(20) related entities
 
-    if not len(results):    # results just with entity name
+    if not len(results):  # results just with entity name
         return None
-    node_datas = await asyncio.gather(      # get full information of retrieved entities
+    node_datas = await asyncio.gather(  # get full information of retrieved entities
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
-    if not all([n is not None for n in node_datas]):    # for robustness
+    if not all([n is not None for n in node_datas]):  # for robustness
         logger.warning("Some nodes are missing, maybe the storage is damaged")
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
-    node_datas = [                          # add rank, which is the degree
+    node_datas = [  # add rank, which is the degree
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]
     overall_node_datas = node_datas
-    node_datas = node_datas[:query_param.top_k]
+    node_datas = node_datas[: query_param.top_k]
 
-    use_communities = await _find_most_related_community_from_entities(     # related communities
-        node_datas, query_param, community_reports
+    use_communities = (
+        await _find_most_related_community_from_entities(  # related communities
+            node_datas, query_param, community_reports
+        )
     )
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
@@ -1291,19 +1385,21 @@ async def _build_hierarchical_query_context(
         for next_node in required_nodes:
             # 找到从当前节点到下一个必经节点的最短路径
             try:
-                sub_path = nx.shortest_path(graph, source=current_node, target=next_node)
+                sub_path = nx.shortest_path(
+                    graph, source=current_node, target=next_node
+                )
             except nx.NetworkXNoPath:
                 # raise ValueError(f"No path between {current_node} and {next_node}.")
                 final_path.extend([next_node])
                 current_node = next_node
                 continue
-            
+
             # 合并路径（避免重复添加当前节点）
             if final_path:
                 final_path.extend(sub_path[1:])  # 从第二个节点开始添加，避免重复
             else:
                 final_path.extend(sub_path)
-            
+
             # 更新当前节点为下一个必经节点
             current_node = next_node
 
@@ -1323,28 +1419,37 @@ async def _build_hierarchical_query_context(
     if use_communities:
         for c in use_communities:
             cur_community_key_entities = []
-            community_entities = c['nodes']
+            community_entities = c["nodes"]
             # find the top-k entities in this community
             cur_community_key_entities.extend(
-                [e for e in overall_node_datas if e['entity_name'] in community_entities][:max_entity_num]
+                [
+                    e
+                    for e in overall_node_datas
+                    if e["entity_name"] in community_entities
+                ][:max_entity_num]
             )
             key_entities.append(cur_community_key_entities)
     else:
         key_entities = [overall_node_datas[:max_entity_num]]
     # unique key entities
-    key_entities = [[e['entity_name'] for e in k] for k in key_entities]
+    key_entities = [[e["entity_name"] for e in k] for k in key_entities]
     key_entities = list(set([k for kk in key_entities for k in kk]))
     # find the shortest path between the key entities
     try:
-        path = find_path_with_required_nodes(knowledge_graph_inst._graph, key_entities[0], key_entities[-1], key_entities[1:-1])
+        path = find_path_with_required_nodes(
+            knowledge_graph_inst._graph,
+            key_entities[0],
+            key_entities[-1],
+            key_entities[1:-1],
+        )
         # path = list(set(path))
-        path_datas = await asyncio.gather(      # get full information of retrieved entities
+        path_datas = await asyncio.gather(  # get full information of retrieved entities
             *[knowledge_graph_inst.get_node(r) for r in path]
         )
         path_degrees = await asyncio.gather(
             *[knowledge_graph_inst.node_degree(r) for r in path]
         )
-        path_datas = [                          # add rank, which is the degree
+        path_datas = [  # add rank, which is the degree
             {**n, "entity_name": k, "rank": d}
             for k, n, d in zip(path, path_datas, path_degrees)
             if n is not None
@@ -1353,11 +1458,11 @@ async def _build_hierarchical_query_context(
         #                     path_datas, query_param, knowledge_graph_inst
         #                 )
         use_reasoning_path = await _find_most_related_edges_from_paths(
-                                path_datas, path, query_param, knowledge_graph_inst
-                            )
+            path_datas, path, query_param, knowledge_graph_inst
+        )
     except ValueError as e:
         print(e)
-    
+
     # # fetch the relations of the reasoning paths
     # reasoning_path = []
     # for i in range(len(path) - 1):
@@ -1382,7 +1487,7 @@ async def _build_hierarchical_query_context(
             ]
         )
     entities_context = list_of_list_to_csv(entites_section_list)
-    
+
     reasoning_path_section_list = [
         ["id", "source", "target", "description", "weight", "rank"]
     ]
@@ -1398,9 +1503,9 @@ async def _build_hierarchical_query_context(
             ]
         )
     reasoning_path_context = list_of_list_to_csv(reasoning_path_section_list)
-    
+
     # reasoning_path_context = list_of_list_to_csv([["id", "content"]] + [[i, p] for i, p in enumerate(reasoning_path)])
-    
+
     communities_section_list = [["id", "content"]]
     for i, c in enumerate(use_communities):
         communities_section_list.append([i, c["report_string"].replace("\n", " ")])
@@ -1451,28 +1556,32 @@ async def _build_hibridge_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    results = await entities_vdb.query(query, top_k=query_param.top_k * 10)          # find the top-k(20) related entities
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k * 10
+    )  # find the top-k(20) related entities
 
-    if not len(results):    # results just with entity name
+    if not len(results):  # results just with entity name
         return None
-    node_datas = await asyncio.gather(      # get full information of retrieved entities
+    node_datas = await asyncio.gather(  # get full information of retrieved entities
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
-    if not all([n is not None for n in node_datas]):    # for robustness
+    if not all([n is not None for n in node_datas]):  # for robustness
         logger.warning("Some nodes are missing, maybe the storage is damaged")
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
-    node_datas = [                          # add rank, which is the degree
+    node_datas = [  # add rank, which is the degree
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]
     overall_node_datas = node_datas
-    node_datas = node_datas[:query_param.top_k]
+    node_datas = node_datas[: query_param.top_k]
 
-    use_communities = await _find_most_related_community_from_entities(     # related communities
-        node_datas, query_param, community_reports
+    use_communities = (
+        await _find_most_related_community_from_entities(  # related communities
+            node_datas, query_param, community_reports
+        )
     )
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
@@ -1491,19 +1600,21 @@ async def _build_hibridge_query_context(
         for next_node in required_nodes:
             # 找到从当前节点到下一个必经节点的最短路径
             try:
-                sub_path = nx.shortest_path(graph, source=current_node, target=next_node)
+                sub_path = nx.shortest_path(
+                    graph, source=current_node, target=next_node
+                )
             except nx.NetworkXNoPath:
                 # raise ValueError(f"No path between {current_node} and {next_node}.")
                 final_path.extend([next_node])
                 current_node = next_node
                 continue
-            
+
             # 合并路径（避免重复添加当前节点）
             if final_path:
                 final_path.extend(sub_path[1:])  # 从第二个节点开始添加，避免重复
             else:
                 final_path.extend(sub_path)
-            
+
             # 更新当前节点为下一个必经节点
             current_node = next_node
 
@@ -1523,35 +1634,44 @@ async def _build_hibridge_query_context(
     if use_communities:
         for c in use_communities:
             cur_community_key_entities = []
-            community_entities = c['nodes']
+            community_entities = c["nodes"]
             # find the top-k entities in this community
             cur_community_key_entities.extend(
-                [e for e in overall_node_datas if e['entity_name'] in community_entities][:max_entity_num]
+                [
+                    e
+                    for e in overall_node_datas
+                    if e["entity_name"] in community_entities
+                ][:max_entity_num]
             )
             key_entities.append(cur_community_key_entities)
     else:
         key_entities = [overall_node_datas[:max_entity_num]]
     # unique key entities
-    key_entities = [[e['entity_name'] for e in k] for k in key_entities]
+    key_entities = [[e["entity_name"] for e in k] for k in key_entities]
     key_entities = list(set([k for kk in key_entities for k in kk]))
     # find the shortest path between the key entities
     try:
-        path = find_path_with_required_nodes(knowledge_graph_inst._graph, key_entities[0], key_entities[-1], key_entities[1:-1])
+        path = find_path_with_required_nodes(
+            knowledge_graph_inst._graph,
+            key_entities[0],
+            key_entities[-1],
+            key_entities[1:-1],
+        )
         # path = list(set(path))
-        path_datas = await asyncio.gather(      # get full information of retrieved entities
+        path_datas = await asyncio.gather(  # get full information of retrieved entities
             *[knowledge_graph_inst.get_node(r) for r in path]
         )
         path_degrees = await asyncio.gather(
             *[knowledge_graph_inst.node_degree(r) for r in path]
         )
-        path_datas = [                          # add rank, which is the degree
+        path_datas = [  # add rank, which is the degree
             {**n, "entity_name": k, "rank": d}
             for k, n, d in zip(path, path_datas, path_degrees)
             if n is not None
         ]
         use_reasoning_path = await _find_most_related_edges_from_paths(
-                                path_datas, path, query_param, knowledge_graph_inst
-                            )
+            path_datas, path, query_param, knowledge_graph_inst
+        )
     except ValueError as e:
         print(e)
 
@@ -1570,7 +1690,7 @@ async def _build_hibridge_query_context(
             ]
         )
     entities_context = list_of_list_to_csv(entites_section_list)
-    
+
     reasoning_path_section_list = [
         ["id", "source", "target", "description", "weight", "rank"]
     ]
@@ -1586,9 +1706,9 @@ async def _build_hibridge_query_context(
             ]
         )
     reasoning_path_context = list_of_list_to_csv(reasoning_path_section_list)
-    
+
     # reasoning_path_context = list_of_list_to_csv([["id", "content"]] + [[i, p] for i, p in enumerate(reasoning_path)])
-    
+
     communities_section_list = [["id", "content"]]
     for i, c in enumerate(use_communities):
         communities_section_list.append([i, c["report_string"]])
@@ -1618,38 +1738,41 @@ async def _build_higlobal_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    results = await entities_vdb.query(query, top_k=query_param.top_k * 10)          # find the top-k(20) related entities
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k * 10
+    )  # find the top-k(20) related entities
 
-    if not len(results):    # results just with entity name
+    if not len(results):  # results just with entity name
         return None
-    node_datas = await asyncio.gather(      # get full information of retrieved entities
+    node_datas = await asyncio.gather(  # get full information of retrieved entities
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
-    if not all([n is not None for n in node_datas]):    # for robustness
+    if not all([n is not None for n in node_datas]):  # for robustness
         logger.warning("Some nodes are missing, maybe the storage is damaged")
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
-    node_datas = [                          # add rank, which is the degree
+    node_datas = [  # add rank, which is the degree
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]
     overall_node_datas = node_datas
-    node_datas = node_datas[:query_param.top_k]
+    node_datas = node_datas[: query_param.top_k]
 
-    use_communities = await _find_most_related_community_from_entities(     # related communities
-        node_datas, query_param, community_reports
+    use_communities = (
+        await _find_most_related_community_from_entities(  # related communities
+            node_datas, query_param, community_reports
+        )
     )
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
     )
 
-
     logger.info(
         f"Using {len(use_communities)} communities, {len(use_text_units)} text units"
     )
-    
+
     communities_section_list = [["id", "content"]]
     for i, c in enumerate(use_communities):
         communities_section_list.append([i, c["report_string"]])
@@ -1678,19 +1801,21 @@ async def _build_hilocal_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    results = await entities_vdb.query(query, top_k=query_param.top_k)          # find the top-k(20) related entities
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k
+    )  # find the top-k(20) related entities
 
-    if not len(results):    # results just with entity name
+    if not len(results):  # results just with entity name
         return None
-    node_datas = await asyncio.gather(      # get full information of retrieved entities
+    node_datas = await asyncio.gather(  # get full information of retrieved entities
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
-    if not all([n is not None for n in node_datas]):    # for robustness
+    if not all([n is not None for n in node_datas]):  # for robustness
         logger.warning("Some nodes are missing, maybe the storage is damaged")
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
-    node_datas = [                          # add rank, which is the degree
+    node_datas = [  # add rank, which is the degree
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
@@ -1718,7 +1843,7 @@ async def _build_hilocal_query_context(
             ]
         )
     entities_context = list_of_list_to_csv(entites_section_list)
-    
+
     relation_section_list = [
         ["id", "source", "target", "description", "weight", "rank"]
     ]
@@ -1734,7 +1859,7 @@ async def _build_hilocal_query_context(
             ]
         )
     relation_context = list_of_list_to_csv(relation_section_list)
-    
+
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append([i, t["content"]])
@@ -1789,6 +1914,7 @@ async def hierarchical_query(
     )
     return response
 
+
 async def hierarchical_bridge_query(
     query,
     knowledge_graph_inst: BaseGraphStorage,
@@ -1821,6 +1947,7 @@ async def hierarchical_bridge_query(
         system_prompt=sys_prompt,
     )
     return response
+
 
 async def hierarchical_local_query(
     query,
@@ -1855,6 +1982,7 @@ async def hierarchical_local_query(
     )
     return response
 
+
 async def hierarchical_global_query(
     query,
     knowledge_graph_inst: BaseGraphStorage,
@@ -1887,6 +2015,7 @@ async def hierarchical_global_query(
         system_prompt=sys_prompt,
     )
     return response
+
 
 async def hierarchical_nobridge_query(
     query,
@@ -1923,6 +2052,7 @@ async def hierarchical_nobridge_query(
         system_prompt=sys_prompt,
     )
     return response
+
 
 async def naive_query(
     query,
