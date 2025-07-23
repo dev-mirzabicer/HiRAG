@@ -7,7 +7,8 @@ from functools import partial
 from typing import Callable, Dict, List, Optional, Type, Union, cast
 
 import tiktoken
-import networkx as nx  # Import networkx for pathfinding
+
+from hirag._storage.gdb_neo4j import Neo4jStorage  # Import networkx for pathfinding
 
 from ._llm import (
     gpt_4o_complete,
@@ -435,39 +436,101 @@ class HiRAG:
         return [chunk for chunk in chunks if chunk is not None]
 
     async def afind_reasoning_path(
-        self, start_entity: str, end_entity: str
+        self,
+        start_entity: str,
+        end_entity: str,
+        algorithm: str = "auto",
+        max_hops: int = 10,
+        use_weights: bool = False,
+        weight_property: str = "weight",
     ) -> Optional[Dict[str, List]]:
         """
         Finds the shortest path between two entities in the knowledge graph.
-        NOTE: This implementation currently only supports NetworkXStorage.
+        Now supports both NetworkX and Neo4j storage backends with multiple algorithms.
 
         Args:
             start_entity: The name of the starting entity.
             end_entity: The name of the ending entity.
+            algorithm: Algorithm to use ('auto', 'shortest', 'dijkstra', 'all_shortest', 'k_shortest')
+            max_hops: Maximum number of hops to consider
+            use_weights: Whether to use relationship weights
+            weight_property: Property name for relationship weights
 
         Returns:
             A dictionary containing the 'nodes' and 'edges' along the path, or None if no path exists.
         """
-        if not isinstance(self.chunk_entity_relation_graph, NetworkXStorage):
-            raise NotImplementedError(
-                "Reasoning path finding is only implemented for NetworkXStorage."
-            )
-
-        graph = self.chunk_entity_relation_graph._graph
         start_node = start_entity.upper()
         end_node = end_entity.upper()
 
+        # NetworkX Storage Implementation
+        if isinstance(self.chunk_entity_relation_graph, NetworkXStorage):
+            return await self._find_path_networkx(
+                start_node, end_node, algorithm, max_hops, use_weights, weight_property
+            )
+
+        # Neo4j Storage Implementation
+        elif isinstance(self.chunk_entity_relation_graph, Neo4jStorage):
+            return await self._find_path_neo4j(
+                start_node, end_node, algorithm, max_hops, use_weights, weight_property
+            )
+
+        else:
+            raise NotImplementedError(
+                f"Reasoning path finding is not implemented for {type(self.chunk_entity_relation_graph).__name__}."
+            )
+
+    async def _find_path_networkx(
+        self,
+        start_entity: str,
+        end_entity: str,
+        algorithm: str,
+        max_hops: int,
+        use_weights: bool,
+        weight_property: str,
+    ) -> Optional[Dict[str, List]]:
+        """NetworkX-specific path finding implementation."""
         try:
-            path_node_ids = nx.shortest_path(graph, source=start_node, target=end_node)
+            import networkx as nx
+
+            graph = self.chunk_entity_relation_graph.graph
+
+            if algorithm == "auto":
+                algorithm = "dijkstra" if use_weights else "shortest"
+
+            # Find the path
+            if algorithm == "shortest" and not use_weights:
+                path_node_ids = nx.shortest_path(
+                    graph, source=start_entity, target=end_entity
+                )
+            elif algorithm == "dijkstra" and use_weights:
+                path_node_ids = nx.shortest_path(
+                    graph,
+                    source=start_entity,
+                    target=end_entity,
+                    weight=weight_property,
+                )
+            elif algorithm == "all_shortest":
+                path_generators = nx.all_shortest_paths(
+                    graph, source=start_entity, target=end_entity
+                )
+                path_node_ids = next(path_generators, None)  # Get first path
+            else:
+                # Default to simple shortest path
+                path_node_ids = nx.shortest_path(
+                    graph, source=start_entity, target=end_entity
+                )
+
+            if not path_node_ids:
+                return None
+
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             logger.warning(
-                f"No path or node found between '{start_node}' and '{end_node}'."
+                f"No path found between '{start_entity}' and '{end_entity}' in NetworkX graph."
             )
             return None
 
-        # Asynchronously "hydrate" the path with full node and edge data
+        # Hydrate the path with full node and edge data
         node_tasks = [self.aget_entity_details(node_id) for node_id in path_node_ids]
-
         edge_tasks = []
         for i in range(len(path_node_ids) - 1):
             src, tgt = path_node_ids[i], path_node_ids[i + 1]
@@ -487,6 +550,229 @@ class HiRAG:
             "nodes": [node for node in hydrated_nodes if node],
             "edges": hydrated_edges,
         }
+
+    async def _find_path_neo4j(
+        self,
+        start_entity: str,
+        end_entity: str,
+        algorithm: str,
+        max_hops: int,
+        use_weights: bool,
+        weight_property: str,
+    ) -> Optional[Dict[str, List]]:
+        """Neo4j-specific path finding implementation."""
+
+        # Auto-select the best algorithm based on conditions
+        if algorithm == "auto":
+            if use_weights:
+                # For weighted paths, prefer APOC Dijkstra for simplicity
+                neo4j_algorithm = "apoc_dijkstra"
+            else:
+                # For unweighted paths, use modern Cypher SHORTEST
+                neo4j_algorithm = "cypher_shortest"
+        elif algorithm == "shortest":
+            neo4j_algorithm = "cypher_shortest" if not use_weights else "apoc_dijkstra"
+        elif algorithm == "dijkstra":
+            neo4j_algorithm = "gds_dijkstra" if use_weights else "cypher_shortest"
+        elif algorithm == "all_shortest":
+            # Handle all shortest paths separately
+            return await self._find_all_shortest_paths_neo4j(
+                start_entity, end_entity, max_hops
+            )
+        elif algorithm == "k_shortest":
+            # Handle K shortest paths separately
+            return await self._find_k_shortest_paths_neo4j(
+                start_entity, end_entity, max_hops, weight_property
+            )
+        else:
+            neo4j_algorithm = "cypher_shortest"
+
+        # Use the Neo4j storage's path finding method
+        path_result = await self.chunk_entity_relation_graph.find_shortest_path(
+            start_entity=start_entity,
+            end_entity=end_entity,
+            max_hops=max_hops,
+            use_weights=use_weights,
+            weight_property=weight_property,
+            algorithm=neo4j_algorithm,
+        )
+
+        if not path_result:
+            logger.warning(
+                f"No path found between '{start_entity}' and '{end_entity}' in Neo4j graph."
+            )
+            return None
+
+        # The Neo4j implementation already returns hydrated data
+        return path_result
+
+    async def _find_all_shortest_paths_neo4j(
+        self, start_entity: str, end_entity: str, max_hops: int
+    ) -> Optional[Dict[str, List]]:
+        """Find all shortest paths using Neo4j."""
+        paths = await self.chunk_entity_relation_graph.find_all_shortest_paths(
+            start_entity=start_entity,
+            end_entity=end_entity,
+            max_hops=max_hops,
+            limit=10,
+        )
+
+        if paths:
+            # Return the first shortest path for compatibility, but log all paths found
+            logger.info(
+                f"Found {len(paths)} shortest paths between {start_entity} and {end_entity}"
+            )
+            return paths[0]
+        else:
+            return None
+
+    async def _find_k_shortest_paths_neo4j(
+        self,
+        start_entity: str,
+        end_entity: str,
+        max_hops: int,
+        weight_property: str,
+        k: int = 3,
+    ) -> Optional[Dict[str, List]]:
+        """Find K shortest paths using Neo4j (Yen's algorithm)."""
+        paths = await self.chunk_entity_relation_graph.find_k_shortest_paths(
+            start_entity=start_entity,
+            end_entity=end_entity,
+            k=k,
+            weight_property=weight_property,
+        )
+
+        if paths:
+            # Return the first shortest path for compatibility, but log all paths found
+            logger.info(
+                f"Found {len(paths)} K-shortest paths between {start_entity} and {end_entity}"
+            )
+            return paths[0]
+        else:
+            return None
+
+    # ===================================================================
+    # ADVANCED PATH FINDING METHODS FOR AGENTS
+    # ===================================================================
+
+    async def afind_multiple_reasoning_paths(
+        self, start_entity: str, end_entity: str, k: int = 3, algorithm: str = "auto"
+    ) -> List[Dict[str, List]]:
+        """
+        Find multiple reasoning paths between two entities.
+        Useful for agents that need to explore different reasoning routes.
+
+        Args:
+            start_entity: Source entity name
+            end_entity: Target entity name
+            k: Number of paths to find
+            algorithm: Algorithm preference
+
+        Returns:
+            List of path dictionaries
+        """
+        start_node = start_entity.upper()
+        end_node = end_entity.upper()
+
+        if isinstance(self.chunk_entity_relation_graph, Neo4jStorage):
+            if algorithm in ["auto", "k_shortest", "yens"]:
+                return await self.chunk_entity_relation_graph.find_k_shortest_paths(
+                    start_entity=start_node,
+                    end_entity=end_node,
+                    k=k,
+                    weight_property="weight",
+                )
+            else:
+                return await self.chunk_entity_relation_graph.find_all_shortest_paths(
+                    start_entity=start_node, end_entity=end_node, max_hops=10, limit=k
+                )
+
+        elif isinstance(self.chunk_entity_relation_graph, NetworkXStorage):
+            try:
+                import networkx as nx
+
+                graph = self.chunk_entity_relation_graph.graph
+
+                # Find all shortest paths and return up to k of them
+                path_generators = nx.all_shortest_paths(
+                    graph, source=start_node, target=end_node
+                )
+                paths = []
+
+                for i, path_node_ids in enumerate(path_generators):
+                    if i >= k:
+                        break
+
+                    # Hydrate each path
+                    node_tasks = [
+                        self.aget_entity_details(node_id) for node_id in path_node_ids
+                    ]
+                    edge_tasks = []
+                    for j in range(len(path_node_ids) - 1):
+                        src, tgt = path_node_ids[j], path_node_ids[j + 1]
+                        edge_tasks.append(
+                            self.chunk_entity_relation_graph.get_edge(src, tgt)
+                        )
+
+                    hydrated_nodes = await asyncio.gather(*node_tasks)
+                    hydrated_edges_data = await asyncio.gather(*edge_tasks)
+
+                    hydrated_edges = []
+                    for j, edge_data in enumerate(hydrated_edges_data):
+                        if edge_data:
+                            src, tgt = path_node_ids[j], path_node_ids[j + 1]
+                            hydrated_edges.append(
+                                {"source": src, "target": tgt, **edge_data}
+                            )
+
+                    paths.append(
+                        {
+                            "nodes": [node for node in hydrated_nodes if node],
+                            "edges": hydrated_edges,
+                            "path_length": len(path_node_ids) - 1,
+                        }
+                    )
+
+                return paths
+
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                logger.warning(
+                    f"No paths found between '{start_entity}' and '{end_entity}' in NetworkX graph."
+                )
+                return []
+
+        else:
+            raise NotImplementedError(
+                f"Multiple path finding is not implemented for {type(self.chunk_entity_relation_graph).__name__}."
+            )
+
+    async def afind_weighted_reasoning_path(
+        self,
+        start_entity: str,
+        end_entity: str,
+        weight_property: str = "weight",
+        algorithm: str = "dijkstra",
+    ) -> Optional[Dict[str, List]]:
+        """
+        Find the shortest weighted path between two entities.
+        Useful for agents that need to consider relationship strengths or costs.
+
+        Args:
+            start_entity: Source entity name
+            end_entity: Target entity name
+            weight_property: Property to use as edge weight
+            algorithm: Algorithm to use ('dijkstra', 'apoc_dijkstra', 'gds_dijkstra')
+
+        Returns:
+            Path dictionary with cost information, or None if no path exists
+        """
+        return await self.afind_reasoning_path(
+            start_entity=start_entity,
+            end_entity=end_entity,
+            algorithm=algorithm,
+            use_weights=True,
+            weight_property=weight_property,
+        )
 
     # --- Internal methods for indexing lifecycle ---
     async def _insert_start(self):
