@@ -11,11 +11,7 @@ from typing import List, Optional
 from sklearn.mixture import GaussianMixture
 from tqdm import tqdm
 from collections import Counter, defaultdict
-from .base import (
-    BaseGraphStorage,
-    BaseKVStorage,
-    BaseVectorStorage
-)
+from .base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
 from ._utils import split_string_by_multi_markers, clean_str, is_float_regex
 from ._validation import validate
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
@@ -56,8 +52,8 @@ def fit_gaussian_mixture(n_components, embeddings, random_state):
         n_components=n_components,
         random_state=random_state,
         n_init=5,
-        init_params='k-means++'
-        )
+        init_params="k-means++",
+    )
     gm.fit(embeddings)
     return gm.bic(embeddings)
 
@@ -66,7 +62,7 @@ def get_optimal_clusters(embeddings, max_clusters=50, random_state=0, rel_tol=1e
     max_clusters = min(len(embeddings), max_clusters)
     n_clusters = np.arange(1, max_clusters)
     bics = []
-    prev_bic = float('inf')
+    prev_bic = float("inf")
     for n in tqdm(n_clusters):
         bic = fit_gaussian_mixture(n, embeddings, random_state)
         # print(bic)
@@ -82,12 +78,13 @@ def get_optimal_clusters(embeddings, max_clusters=50, random_state=0, rel_tol=1e
 def GMM_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0):
     n_clusters = get_optimal_clusters(embeddings)
     gm = GaussianMixture(
-        n_components=n_clusters, 
-        random_state=random_state, 
+        n_components=n_clusters,
+        random_state=random_state,
         n_init=5,
-        init_params='k-means++')
+        init_params="k-means++",
+    )
     gm.fit(embeddings)
-    probs = gm.predict_proba(embeddings)        # [num, cluster_num]
+    probs = gm.predict_proba(embeddings)  # [num, cluster_num]
     labels = [np.where(prob > threshold)[0] for prob in probs]
     return labels, n_clusters
 
@@ -95,8 +92,10 @@ def GMM_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0)
 def perform_clustering(
     embeddings: np.ndarray, dim: int, threshold: float, verbose: bool = False
 ) -> List[np.ndarray]:
-    reduced_embeddings_global = global_cluster_embeddings(embeddings, min(dim, len(embeddings) -2))
-    global_clusters, n_global_clusters = GMM_cluster(     # (num, 2)
+    reduced_embeddings_global = global_cluster_embeddings(
+        embeddings, min(dim, len(embeddings) - 2)
+    )
+    global_clusters, n_global_clusters = GMM_cluster(  # (num, 2)
         reduced_embeddings_global, threshold
     )
 
@@ -104,7 +103,9 @@ def perform_clustering(
         logging.info(f"Global Clusters: {n_global_clusters}")
 
     all_clusters = [[] for _ in range(len(embeddings))]
-    embedding_to_index = {tuple(embedding): idx for idx, embedding in enumerate(embeddings)}
+    embedding_to_index = {
+        tuple(embedding): idx for idx, embedding in enumerate(embeddings)
+    }
     for i in tqdm(range(n_global_clusters)):
         global_cluster_embeddings_ = embeddings[
             np.array([i in gc for gc in global_clusters])
@@ -186,7 +187,7 @@ class ClusteringAlgorithm(ABC):
 class Hierarchical_Clustering(ClusteringAlgorithm):
     async def perform_clustering(
         self,
-        entity_vdb: BaseVectorStorage,
+        embedding_func: callable,
         global_config: dict,
         entities: dict,
         layers: int = 50,
@@ -195,14 +196,14 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
         reduction_dimension: int = 2,
         cluster_threshold: float = 0.1,
         verbose: bool = False,
-        threshold: float = 0.98, # 0.99
-        thredshold_change_rate: float = 0.05
+        threshold: float = 0.98,  # 0.99
+        thredshold_change_rate: float = 0.05,
     ) -> List[dict]:
         use_llm_func: callable = global_config["best_model_func"]
         # Get the embeddings from the nodes
         nodes = list(entities.values())
         embeddings = np.array([x["embedding"] for x in nodes])
-        
+
         hierarchical_clusters = [nodes]
         pre_cluster_sparsity = 0.01
         for layer in range(layers):
@@ -215,20 +216,30 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
             node_clusters = []
             # Iterate over each unique label in the clusters
             unique_clusters = np.unique(np.concatenate(clusters))
-            logging.info(f"[Clustered Label Num: {len(unique_clusters)} / Last Layer Total Entity Num: {len(nodes)}]")
+            logging.info(
+                f"[Clustered Label Num: {len(unique_clusters)} / Last Layer Total Entity Num: {len(nodes)}]"
+            )
             # calculate the number of nodes belong to each cluster
             cluster_sizes = Counter(np.concatenate(clusters))
             # calculate cluster sparsity
-            cluster_sparsity = 1 - sum([x * (x - 1) for x in cluster_sizes.values()])/(len(nodes) * (len(nodes) - 1))
-            cluster_sparsity_change_rate = (abs(cluster_sparsity - pre_cluster_sparsity) / (pre_cluster_sparsity + 1e-8))
+            cluster_sparsity = 1 - sum(
+                [x * (x - 1) for x in cluster_sizes.values()]
+            ) / (len(nodes) * (len(nodes) - 1))
+            cluster_sparsity_change_rate = abs(
+                cluster_sparsity - pre_cluster_sparsity
+            ) / (pre_cluster_sparsity + 1e-8)
             pre_cluster_sparsity = cluster_sparsity
             logging.info(f"[Cluster Sparsity: {round(cluster_sparsity, 4) * 100}%]")
             # stop if there will be no improvements on clustering
             if cluster_sparsity >= threshold:
-                logging.info(f"[Stop Clustering at Layer{layer} with Cluster Sparsity {cluster_sparsity}]")
+                logging.info(
+                    f"[Stop Clustering at Layer{layer} with Cluster Sparsity {cluster_sparsity}]"
+                )
                 break
             if cluster_sparsity_change_rate <= thredshold_change_rate:
-                logging.info(f"[Stop Clustering at Layer{layer} with Cluster Sparsity Change Rate {round(cluster_sparsity_change_rate, 4) * 100}%]")
+                logging.info(
+                    f"[Stop Clustering at Layer{layer} with Cluster Sparsity Change Rate {round(cluster_sparsity_change_rate, 4) * 100}%]"
+                )
                 break
             # summarize
             for label in unique_clusters:
@@ -243,7 +254,11 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                     continue
                 # Calculate the total length of the text in the nodes
                 total_length = sum(
-                    [len(tokenizer.encode(node["description"])) + len(tokenizer.encode(node["entity_name"])) for node in cluster_nodes]
+                    [
+                        len(tokenizer.encode(node["description"]))
+                        + len(tokenizer.encode(node["entity_name"]))
+                        for node in cluster_nodes
+                    ]
                 )
                 base_discount = 0.8
                 discount_times = 0
@@ -256,33 +271,44 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                     # for node in cluster_nodes:
                     #     description = node["description"]
                     #     node['description'] = description[:int(len(description) * base_discount)]
-                    
+
                     # Randomly select 80% of the nodes
-                    num_to_select = max(1, int(len(cluster_nodes) * base_discount))  # Ensure at least one node is selected
+                    num_to_select = max(
+                        1, int(len(cluster_nodes) * base_discount)
+                    )  # Ensure at least one node is selected
                     cluster_nodes = random.sample(cluster_nodes, num_to_select)
 
                     # Recalculate the total length
                     total_length = sum(
-                        [len(tokenizer.encode(node["description"])) + len(tokenizer.encode(node["entity_name"])) for node in cluster_nodes]
+                        [
+                            len(tokenizer.encode(node["description"]))
+                            + len(tokenizer.encode(node["entity_name"]))
+                            for node in cluster_nodes
+                        ]
                     )
                     discount_times += 1
                 # summarize and generate new entities
-                entity_description_list = [f"({x['entity_name']}, {x['description']})" for x in cluster_nodes]
+                entity_description_list = [
+                    f"({x['entity_name']}, {x['description']})" for x in cluster_nodes
+                ]
                 context_base_summarize = dict(
                     tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
                     record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
                     completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
                     meta_attribute_list=PROMPTS["META_ENTITY_TYPES"],
-                    entity_description_list=",".join(entity_description_list)
-                    )
+                    entity_description_list=",".join(entity_description_list),
+                )
                 summarize_prompt = PROMPTS["summary_clusters"]
                 hint_prompt = summarize_prompt.format(**context_base_summarize)
                 summarize_result = await use_llm_func(hint_prompt)
                 chunk_key = ""
                 # resolve results
-                records = split_string_by_multi_markers(                                            # split entities from result --> list of entities
+                records = split_string_by_multi_markers(  # split entities from result --> list of entities
                     summarize_result,
-                    [context_base_summarize["record_delimiter"], context_base_summarize["completion_delimiter"]],
+                    [
+                        context_base_summarize["record_delimiter"],
+                        context_base_summarize["completion_delimiter"],
+                    ],
                 )
                 maybe_nodes = defaultdict(list)
                 maybe_edges = defaultdict(list)
@@ -291,10 +317,10 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                     if record is None:
                         continue
                     record = record.group(1)
-                    record_attributes = split_string_by_multi_markers(          # split entity
+                    record_attributes = split_string_by_multi_markers(  # split entity
                         record, [context_base_summarize["tuple_delimiter"]]
                     )
-                    if_entities = await _handle_single_entity_extraction(       # get the name, type, desc, source_id of entity--> dict
+                    if_entities = await _handle_single_entity_extraction(  # get the name, type, desc, source_id of entity--> dict
                         record_attributes, chunk_key
                     )
                     if if_entities is not None:
@@ -305,9 +331,9 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                         record_attributes, chunk_key
                     )
                     if if_relation is not None:
-                        maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
-                                if_relation
-                        )
+                        maybe_edges[
+                            (if_relation["src_id"], if_relation["tgt_id"])
+                        ].append(if_relation)
                 # fetch all entities from results
                 entity_results = (dict(maybe_nodes), dict(maybe_edges))
                 all_entities_relations = {}
@@ -316,15 +342,21 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                         value = v[0]
                         all_entities_relations[k] = v[0]
                 # fetch embeddings
-                entity_discriptions = [v["description"] for k, v in all_entities_relations.items()]
+                entity_discriptions = [
+                    v["description"] for k, v in all_entities_relations.items()
+                ]
                 entity_sequence_embeddings = []
                 embeddings_batch_size = 64
-                num_embeddings_batches = (len(entity_discriptions) + embeddings_batch_size - 1) // embeddings_batch_size
+                num_embeddings_batches = (
+                    len(entity_discriptions) + embeddings_batch_size - 1
+                ) // embeddings_batch_size
                 for i in range(num_embeddings_batches):
                     start_index = i * embeddings_batch_size
-                    end_index = min((i + 1) * embeddings_batch_size, len(entity_discriptions))
+                    end_index = min(
+                        (i + 1) * embeddings_batch_size, len(entity_discriptions)
+                    )
                     batch = entity_discriptions[start_index:end_index]
-                    result = await entity_vdb.embedding_func(batch)
+                    result = await embedding_func(batch)
                     entity_sequence_embeddings.extend(result)
                 entity_embeddings = entity_sequence_embeddings
                 for (k, v), x in zip(all_entities_relations.items(), entity_embeddings):
@@ -336,12 +368,14 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                 node_clusters += all_entities_relations
             hierarchical_clusters.append(node_clusters)
             # update nodes to be clustered in the next layer
-            nodes = copy.deepcopy([x for x in node_clusters if "entity_name" in x.keys()])
+            nodes = copy.deepcopy(
+                [x for x in node_clusters if "entity_name" in x.keys()]
+            )
             # filter the duplicate entities
-            seen = set()        
+            seen = set()
             unique_nodes = []
             for item in nodes:
-                entity_name = item['entity_name']
+                entity_name = item["entity_name"]
                 if entity_name not in seen:
                     seen.add(entity_name)
                     unique_nodes.append(item)
@@ -349,6 +383,8 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
             embeddings = np.array([x["embedding"] for x in unique_nodes])
             # stop if the number of deduplicated cluster is too small
             if len(embeddings) <= 2:
-                logging.info(f"[Stop Clustering at Layer{layer} with entity num {len(embeddings)}]")
+                logging.info(
+                    f"[Stop Clustering at Layer{layer} with entity num {len(embeddings)}]"
+                )
                 break
         return hierarchical_clusters
