@@ -1,57 +1,27 @@
-"""
-Entity Disambiguation and Merging (EDM) Module
-
-This module implements a robust three-stage pipeline for identifying and merging
-entities that refer to the same concept but are named differently across text chunks.
-
-The pipeline consists of:
-1. Candidate Generation: Use lexical and semantic similarity of entity names
-2. LLM Verification: Use context and original text to make final decisions
-3. Graph Consolidation: Apply merge decisions to create the final graph
-
-Author: HiRAG Development Team
-"""
-
 import asyncio
 import numpy as np
 from collections import defaultdict
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple
 from hirag.prompt import PROMPTS
 from thefuzz import fuzz
 from sklearn.metrics.pairwise import cosine_similarity
 
 from .base import BaseKVStorage, TextChunkSchema
-from ._utils import logger, compute_mdhash_id, clean_str, convert_response_to_json
-from ._op import (
-    _handle_entity_relation_summary,
-    _merge_nodes_then_upsert,
-    _merge_edges_then_upsert,
-)
+from ._utils import logger, EmbeddingFunc
 
 
 class EntityDisambiguator:
     """
-    A comprehensive entity disambiguation system that identifies and merges
-    entities referring to the same concept but with different names.
-
-    The system uses a conservative approach: it's better to leave duplicates
-    than to incorrectly merge different entities.
+    Identifies potential entity aliases and produces a mapping to canonical names.
+    This class is ONLY responsible for the decision-making, not for merging data.
     """
 
     def __init__(
         self,
         global_config: dict,
         text_chunks_kv: BaseKVStorage[TextChunkSchema],
-        embedding_func,
+        embedding_func: EmbeddingFunc,
     ):
-        """
-        Initialize the EntityDisambiguator.
-
-        Args:
-            global_config: Global HiRAG configuration dictionary
-            text_chunks_kv: Key-value storage for text chunks (to retrieve source context)
-            embedding_func: Function to generate embeddings for entity names
-        """
         self.global_config = global_config
         self.text_chunks_kv = text_chunks_kv
         self.llm_func = global_config["best_model_func"]
@@ -59,60 +29,46 @@ class EntityDisambiguator:
         self.convert_response_to_json_func = global_config[
             "convert_response_to_json_func"
         ]
-
-        # Thresholds for candidate generation (configurable via global_config)
         self.name_sim_threshold = global_config.get("edm_name_sim_threshold", 0.90)
         self.name_emb_sim_threshold = global_config.get(
             "edm_name_emb_sim_threshold", 0.95
         )
-
-        # Maximum cluster size for LLM verification (to avoid overwhelming the LLM)
         self.max_cluster_size_for_llm = global_config.get("edm_max_cluster_size", 10)
 
-    async def run(
-        self, raw_nodes: List[Dict], raw_edges: List[Dict]
-    ) -> Tuple[List[Dict], List[Dict]]:
+    async def run(self, raw_nodes: List[Dict]) -> Dict[str, str]:
         """
         Main entry point for the EDM pipeline.
 
         Args:
             raw_nodes: List of raw entity dictionaries from extraction
-            raw_edges: List of raw relationship dictionaries from extraction
 
         Returns:
-            Tuple of (final_nodes, final_edges) after disambiguation and merging
+            A dictionary mapping alias names to their canonical name.
+            e.g., {"The theory CL_η": "CL_η", "CL_η system": "CL_η"}
         """
         logger.info(f"Starting Entity Disambiguation for {len(raw_nodes)} raw nodes.")
-
         if not raw_nodes:
-            logger.info("No entities to disambiguate, returning empty results.")
-            return [], raw_edges
+            return {}
 
-        # Stage 1: Generate candidate clusters based on name similarity
         candidate_clusters = await self._generate_candidates(raw_nodes)
-        logger.info(
-            f"Generated {len(candidate_clusters)} candidate clusters for verification."
-        )
-
         if not candidate_clusters:
-            logger.info(
-                "No candidate clusters found, entities are sufficiently distinct."
-            )
-            return raw_nodes, raw_edges
+            logger.info("No candidate clusters for disambiguation.")
+            return {}
 
-        # Stage 2: LLM verification of candidate clusters
         llm_decisions = await self._verify_candidates_with_llm(candidate_clusters)
+
+        # Build the final mapping from the LLM's decisions
+        name_to_canonical = {}
+        for decision in llm_decisions:
+            if decision.get("decision") == "MERGE":
+                canonical_name = decision["canonical_name"]
+                for alias in decision.get("aliases", []):
+                    name_to_canonical[alias] = canonical_name
+
         logger.info(
-            f"LLM verification complete. {sum(1 for d in llm_decisions if d['decision'] == 'MERGE')} merges approved."
+            f"Disambiguation complete. Found {len(name_to_canonical)} aliases to be merged."
         )
-
-        # Stage 3: Consolidate the graph based on LLM decisions
-        final_nodes, final_edges = await self._consolidate_graph(
-            raw_nodes, raw_edges, llm_decisions
-        )
-        logger.info(f"Graph consolidated. Final node count: {len(final_nodes)}")
-
-        return final_nodes, final_edges
+        return name_to_canonical
 
     async def _generate_candidates(self, raw_nodes: List[Dict]) -> List[List[Dict]]:
         """
@@ -437,143 +393,3 @@ class EntityDisambiguator:
                 return False
 
         return True
-
-    async def _consolidate_graph(
-        self, raw_nodes: List[Dict], raw_edges: List[Dict], llm_decisions: List[Dict]
-    ) -> Tuple[List[Dict], List[Dict]]:
-        """
-        Stage 3: Consolidate the graph by applying LLM merge decisions.
-        This revised logic ensures each canonical entity is processed exactly once.
-
-        Args:
-            raw_nodes: Original list of raw entity dictionaries
-            raw_edges: Original list of raw relationship dictionaries
-            llm_decisions: List of LLM decisions from Stage 2
-
-        Returns:
-            Tuple of (final_nodes, final_edges) after applying merge decisions
-        """
-        logger.info("Consolidating graph based on LLM decisions...")
-
-        # Build a mapping from every alias to its final canonical name
-        name_to_canonical = {}
-        for decision in llm_decisions:
-            if decision.get("decision") == "MERGE":
-                canonical_name = decision["canonical_name"]
-                for name in [canonical_name] + decision.get("aliases", []):
-                    name_to_canonical[name] = canonical_name
-
-        # Group all raw nodes by their final canonical name
-        nodes_by_canonical = defaultdict(list)
-        for node in raw_nodes:
-            entity_name = node["entity_name"]
-            canonical_name = name_to_canonical.get(entity_name, entity_name)
-            nodes_by_canonical[canonical_name].append(node)
-
-        # Create the final list of nodes by merging the properties for each group
-        final_nodes = []
-        for canonical_name, nodes_to_merge in nodes_by_canonical.items():
-            if len(nodes_to_merge) > 1:
-                # This is a group of aliases that needs to be merged into one entity
-                merged_node = await self._create_merged_entity(
-                    canonical_name, nodes_to_merge
-                )
-                final_nodes.append(merged_node)
-            else:
-                # This is a single, unmerged entity
-                final_nodes.append(nodes_to_merge[0])
-
-        # Consolidate edges by remapping src/tgt to their canonical names
-        final_edges = []
-        for edge in raw_edges:
-            src_canonical = name_to_canonical.get(edge["src_id"], edge["src_id"])
-            tgt_canonical = name_to_canonical.get(edge["tgt_id"], edge["tgt_id"])
-
-            # Avoid creating self-loops
-            if src_canonical == tgt_canonical:
-                continue
-
-            updated_edge = edge.copy()
-            updated_edge["src_id"] = src_canonical
-            updated_edge["tgt_id"] = tgt_canonical
-            final_edges.append(updated_edge)
-
-        logger.info(
-            f"Graph consolidation complete. {len(raw_nodes)} -> {len(final_nodes)} nodes, "
-            f"{len(raw_edges)} -> {len(final_edges)} edges (after removing self-loops)."
-        )
-
-        return final_nodes, final_edges
-
-    async def _create_merged_entity(
-        self, canonical_name: str, entities_to_merge: List[Dict]
-    ) -> Dict:
-        """
-        Create a merged entity from a list of alias entities.
-
-        Args:
-            canonical_name: The canonical name for the merged entity
-            entities_to_merge: A list of raw node dictionaries to be merged
-
-        Returns:
-            A single, merged entity dictionary
-        """
-        # This method is now simplified as it receives the exact nodes to merge
-        if not entities_to_merge:
-            logger.error(
-                f"Called _create_merged_entity for {canonical_name} with no entities."
-            )
-            return {}
-
-        # Merge entity data
-        entity_types = [entity["entity_type"] for entity in entities_to_merge]
-        descriptions = [entity["description"] for entity in entities_to_merge]
-        source_ids = []
-        is_temporary_values = []
-
-        for entity in entities_to_merge:
-            source_ids.extend(entity.get("source_id", "").split("<SEP>"))
-            is_temporary_values.append(entity.get("is_temporary", False))
-
-        # Choose most common entity type
-        from collections import Counter
-
-        most_common_type = Counter(entity_types).most_common(1)[0][0]
-
-        # Combine descriptions and source IDs
-        combined_description = "<SEP>".join(sorted(list(set(descriptions))))
-        combined_source_id = "<SEP>".join(
-            sorted(list(set(sid for sid in source_ids if sid.strip())))
-        )
-
-        # Replicate the strict 'is_temporary' logic from _op.py
-        # An entity is only considered non-temporary if >90% of its mentions are non-temporary.
-        is_temporary_true_count = sum(1 for val in is_temporary_values if val)
-
-        # An entity is considered temporary if 90% or more of its instances are temporary.
-        # This is a strict threshold to avoid incorrectly marking foundational concepts as temporary.
-        if not is_temporary_values:
-            final_is_temporary = False  # Default to non-temporary if no data
-        else:
-            final_is_temporary = (
-                is_temporary_true_count / len(is_temporary_values)
-            ) >= 0.9
-
-        # Create the final merged entity dictionary
-        merged_entity = {
-            "entity_name": canonical_name,
-            "entity_type": most_common_type,
-            "description": combined_description,
-            "source_id": combined_source_id,
-            "is_temporary": final_is_temporary,
-        }
-
-        # Carry over the embedding from the first entity in the list
-        if "embedding" in entities_to_merge[0]:
-            merged_entity["embedding"] = entities_to_merge[0]["embedding"]
-
-        logger.debug(
-            f"Created merged entity '{canonical_name}' from {len(entities_to_merge)} aliases."
-        )
-
-        return merged_entity
