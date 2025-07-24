@@ -33,6 +33,7 @@ If the variable is *highly* temporary, so much so that it is useless outside its
 
 1.  **Factual Information ONLY**: You must extract *only* factual information pertaining to Combinatory Logic.
     *   **DO extract**: Definitions, formal statements, theorems, properties, specific combinators, systems, rules, and their descriptions.
+    *   **DO extract**: Entities that are not explicitly defined but are used in the text, which means they were probably defined elsewhere. You should still extract them, **and your description should only include the information that is given in the text-- you should not add any information that is not given in the text, even if that means writing an incomplete definition**. No matter how obvious it may be, your description should not include any extra information than given in the text.
     *   **DO NOT extract**: Exercises, examples, editorial comments, narrative transitions, author's opinions, historical anecdotes (unless the historical fact itself is a core CL concept, e.g., "Curry's paradox"), section introductions/conclusions, or any text that describes the *structure* of the document rather than the *content* of CL.
     *   **Example**: `\(CL_\\xi \equiv CL_\ext \cup CL_M\)` (extract). "The previous section inspected extensional equality while this section will inspect the equivalence of..." (DO NOT extract).
 
@@ -65,14 +66,14 @@ As usual, types are taken modulo commutativity (τ ∩ σ = σ ∩ τ ), associa
 A type τ ∩ σ is said to have τ and σ as components. For an intersection of several components we sometimes write ∩_i=1^n τ_i or ∩_{i∈I} τ_i or ∩{τ_i | i ∈ I}, where the empty intersection is identified with ω.
 
 Output:
-("entity"{tuple_delimiter}"TYPE EXPRESSION"{tuple_delimiter}"object"{tuple_delimiter}"A formal structure defined recursively by the grammar τ ::= a | τ → τ | τ ∩ τ, where 'a' represents atoms. These expressions form the basis of a type system."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"ATOM"{tuple_delimiter}"object"{tuple_delimiter}"A fundamental building block of type expressions, comprising type constants and type variables."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"TYPE EXPRESSION"{tuple_delimiter}"object"{tuple_delimiter}"Formal structures, ranged over by τ, σ etc., that are defined by the grammar τ ::= a | τ → τ | τ ∩ τ, where 'a' ranges over atoms."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"ATOM"{tuple_delimiter}"object"{tuple_delimiter}"Entities, ranged over by a, b, c, ..., that comprise type constants and type variables."{tuple_delimiter}false){record_delimiter}
 ("entity"{tuple_delimiter}"TYPE CONSTANT"{tuple_delimiter}"object"{tuple_delimiter}"A type of atom drawn from a finite set A, which includes the constant ω."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"TYPE VARIABLE"{tuple_delimiter}"object"{tuple_delimiter}"A type of atom drawn from a disjoint denumerable set V, typically ranged over by α, β."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"TYPE ENVIRONMENT (Γ)"{tuple_delimiter}"object"{tuple_delimiter}"A finite set of type assumptions, where each assumption has the form x : τ, assigning a type to a term variable."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"COMMUTATIVITY OF TYPE INTERSECTION"{tuple_delimiter}"property"{tuple_delimiter}"The property of type intersection where the order of types does not matter, formally τ ∩ σ = σ ∩ τ."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"ASSOCIATIVITY OF TYPE INTERSECTION"{tuple_delimiter}"property"{tuple_delimiter}"The property of type intersection where the grouping of types does not matter, formally ((τ ∩ σ) ∩ ρ) = (τ ∩ (σ ∩ ρ))."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"IDEMPOTENCY OF TYPE INTERSECTION"{tuple_delimiter}"property"{tuple_delimiter}"The property of type intersection where intersecting a type with itself results in the same type, formally τ ∩ τ = τ."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"TYPE VARIABLE"{tuple_delimiter}"object"{tuple_delimiter}"A type of atom drawn from a disjoint denumerable set V, ranged over by α, β etc."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"TYPE ENVIRONMENT (Γ)"{tuple_delimiter}"object"{tuple_delimiter}"A finite set of type assumptions of the form x : τ."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"COMMUTATIVITY OF TYPE INTERSECTION"{tuple_delimiter}"property"{tuple_delimiter}"A property that types are taken modulo, formally expressed as τ ∩ σ = σ ∩ τ."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"ASSOCIATIVITY OF TYPE INTERSECTION"{tuple_delimiter}"property"{tuple_delimiter}"A property that types are taken modulo, formally expressed as ((τ ∩ σ) ∩ ρ) = τ ∩ (σ ∩ ρ)."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"IDEMPOTENCY OF TYPE INTERSECTION"{tuple_delimiter}"property"{tuple_delimiter}"A property that types are taken modulo, formally expressed as τ ∩ τ = τ."{tuple_delimiter}false){record_delimiter}
 ("entity"{tuple_delimiter}"COMPONENT"{tuple_delimiter}"concept"{tuple_delimiter}"In an intersection type τ ∩ σ, the types τ and σ are referred to as its components."{tuple_delimiter}false){completion_delimiter}
 
 Example 2:
@@ -80,12 +81,12 @@ Entity_types: [postulate, object, concept, property, proof]
 Text:
 Theorem 9.2 (Equivalence of Rule-Based Extensional Theories). The theories CL_ζ and CL_ξ+η are theorem-equivalent. That is, for any CL-terms X, Y :
 CL_ζ ⊢ X = Y ⇔ CL_ξ+η ⊢ X = Y
-Consequently, both theories define the same relation =_ext.
+Consequently, both theories define the same relation =_ext (extensional equality).
 
 Output:
 ("entity"{tuple_delimiter}"THEOREM: EQUIVALENCE OF RULE-BASED EXTENSIONAL THEORIES"{tuple_delimiter}"postulate"{tuple_delimiter}"Asserts that the theories CL_ζ and CL_ξ+η are theorem-equivalent, meaning for any CL-terms X and Y, CL_ζ ⊢ X = Y if and only if CL_ξ+η ⊢ X = Y. A consequence is that both theories define the same relation =_ext."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"CL_ζ"{tuple_delimiter}"object"{tuple_delimiter}"A rule-based extensional theory in Combinatory Logic."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"CL_ξ+η"{tuple_delimiter}"object"{tuple_delimiter}"A rule-based extensional theory in Combinatory Logic, related to CL_ζ."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"CL_ζ"{tuple_delimiter}"object"{tuple_delimiter}"A rule-based extensional theory. It is theorem-equivalent to CL_ξ+η."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"CL_ξ+η"{tuple_delimiter}"object"{tuple_delimiter}"A rule-based extensional theory. It is theorem-equivalent to CL_ζ."{tuple_delimiter}false){record_delimiter}
 ("entity"{tuple_delimiter}"THEOREM-EQUIVALENT"{tuple_delimiter}"property"{tuple_delimiter}"A property held by two theories that prove the same set of theorems or equivalences between terms."{tuple_delimiter}false){record_delimiter}
 ("entity"{tuple_delimiter}"=_ext (EXTENSIONAL EQUALITY)"{tuple_delimiter}"object"{tuple_delimiter}"The relation of extensional equality, which is defined identically by the theories CL_ζ and CL_ξ+η."{tuple_delimiter}false){completion_delimiter}
 
@@ -96,10 +97,10 @@ Lemma 4.1 (Output Basis). Let the abstraction algorithm [x].M be defined by Defi
 
 Output:
 ("entity"{tuple_delimiter}"OUTPUT BASIS LEMMA"{tuple_delimiter}"postulate"{tuple_delimiter}"States that the term resulting from the abstraction algorithm, [x].M, is constructed using only application and atoms from the set {S, K} ∪ (FV(M) \\ {x}) ∪ C_M. It specifies that if M is in the set of terms over {S, K}, then the resulting term [x].M is also in the set of terms over {S, K}."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"ABSTRACTION ALGORITHM ([x].M)"{tuple_delimiter}"object"{tuple_delimiter}"An algorithm that takes a term M and a variable x and produces a new term, [x].M, that represents the abstraction of x from M."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"C_M"{tuple_delimiter}"object"{tuple_delimiter}"The set of constants that occur in a specific term M. This is a local definition used for stating Lemma 4.1."{tuple_delimiter}true){record_delimiter}
-("entity"{tuple_delimiter}"S COMBINATOR"{tuple_delimiter}"object"{tuple_delimiter}"A fundamental combinator, one of the atoms used in the construction of terms by the abstraction algorithm."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"K COMBINATOR"{tuple_delimiter}"object"{tuple_delimiter}"A fundamental combinator, one of the atoms used in the construction of terms by the abstraction algorithm."{tuple_delimiter}false){completion_delimiter}
+("entity"{tuple_delimiter}"ABSTRACTION ALGORITHM ([x].M)"{tuple_delimiter}"object"{tuple_delimiter}"An algorithm referenced as being defined by Definition 4.7. According to the lemma, its resulting term is constructed using application and a specific set of atoms including S and K."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"C_M"{tuple_delimiter}"object"{tuple_delimiter}"The set of constants occurring in a term M. This is a local definition used for stating Lemma 4.1."{tuple_delimiter}true){record_delimiter}
+("entity"{tuple_delimiter}"S COMBINATOR"{tuple_delimiter}"object"{tuple_delimiter}"An atom used, along with K, in the construction of terms by the abstraction algorithm."{tuple_delimiter}false){record_delimiter}
+("entity"{tuple_delimiter}"K COMBINATOR"{tuple_delimiter}"object"{tuple_delimiter}"An atom used, along with S, in the construction of terms by the abstraction algorithm."{tuple_delimiter}false){completion_delimiter}
 
 # Real Data
 Entity_types: {entity_types}
