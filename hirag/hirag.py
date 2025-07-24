@@ -9,6 +9,7 @@ from typing import Callable, Dict, List, Optional, Type, Union, cast
 import tiktoken
 
 from hirag._storage.gdb_neo4j import Neo4jStorage
+from ._disambiguation import EntityDisambiguator, DisambiguationConfig
 
 from ._llm import (
     gpt_4o_complete,
@@ -118,6 +119,16 @@ class HiRAG:
     always_create_working_dir: bool = True
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
+    
+    # --- Entity Disambiguation and Merging (EDM) Configuration ---
+    enable_entity_disambiguation: bool = True
+    edm_lexical_similarity_threshold: float = 0.85
+    edm_semantic_similarity_threshold: float = 0.88
+    edm_max_cluster_size: int = 6
+    edm_max_context_tokens: int = 4000
+    edm_min_merge_confidence: float = 0.8
+    edm_embedding_batch_size: int = 32
+    edm_max_concurrent_llm_calls: int = 3
 
     def __post_init__(self):
         # --- __post_init__ logic remains largely the same ---
@@ -192,6 +203,56 @@ class HiRAG:
         self.cheap_model_func = limit_async_func_call(self.cheap_model_max_async)(
             partial(self.cheap_model_func, hashing_kv=self.llm_response_cache)
         )
+        
+        # Initialize EntityDisambiguator with validation
+        if self.enable_entity_disambiguation:
+            # Validate EDM configuration
+            from ._disambiguation import validate_edm_configuration
+            config_dict = asdict(self)
+            validation_issues = validate_edm_configuration(config_dict)
+            
+            if validation_issues:
+                for issue in validation_issues:
+                    if issue.startswith("Warning:"):
+                        logger.warning(issue)
+                    else:
+                        logger.error(issue)
+                
+                # Check if there are any critical errors (non-warnings)
+                critical_errors = [issue for issue in validation_issues if not issue.startswith("Warning:")]
+                if critical_errors:
+                    logger.error("Critical EDM configuration errors found. Disabling entity disambiguation.")
+                    self.disambiguator = None
+                    self.enable_entity_disambiguation = False
+                    return
+            
+            try:
+                edm_config = DisambiguationConfig(
+                    lexical_similarity_threshold=self.edm_lexical_similarity_threshold,
+                    semantic_similarity_threshold=self.edm_semantic_similarity_threshold,
+                    edm_max_cluster_size=self.edm_max_cluster_size,
+                    max_context_tokens=self.edm_max_context_tokens,
+                    min_merge_confidence=self.edm_min_merge_confidence,
+                    embedding_batch_size=self.edm_embedding_batch_size,
+                    max_concurrent_llm_calls=self.edm_max_concurrent_llm_calls,
+                )
+                self.disambiguator = EntityDisambiguator(
+                    global_config=config_dict,
+                    text_chunks_kv=self.text_chunks,
+                    embedding_func=self.embedding_func,
+                    config=edm_config
+                )
+                logger.info("EntityDisambiguator initialized successfully")
+                logger.info(f"EDM Configuration: lexical_threshold={self.edm_lexical_similarity_threshold}, "
+                           f"semantic_threshold={self.edm_semantic_similarity_threshold}, "
+                           f"max_cluster_size={self.edm_max_cluster_size}")
+            except Exception as e:
+                logger.error(f"Failed to initialize EntityDisambiguator: {e}")
+                self.disambiguator = None
+                self.enable_entity_disambiguation = False
+        else:
+            self.disambiguator = None
+            logger.info("Entity disambiguation disabled")
 
     def insert(self, string_or_strings):
         loop = always_get_an_event_loop()
@@ -210,7 +271,9 @@ class HiRAG:
         return loop.run_until_complete(self.aquery(query, param))
 
     async def ainsert(self, string_or_strings):
-        # --- ainsert logic remains the same, as it's the core indexing pipeline ---
+        """
+        Modified ainsert method that integrates the Entity Disambiguation and Merging (EDM) pipeline.
+        """
         await self._insert_start()
         try:
             if isinstance(string_or_strings, str):
@@ -248,27 +311,61 @@ class HiRAG:
 
             await self.community_reports.drop()
 
+            # Extract entities and relations
             if not self.enable_hierachical_mode:
                 logger.info("[Entity Extraction]...")
+                # For non-hierarchical mode, we need to create a wrapper that returns raw data
+                # This maintains backward compatibility
                 maybe_new_kg = await self.entity_extraction_func(
                     inserting_chunks,
                     knwoledge_graph_inst=self.chunk_entity_relation_graph,
                     entity_vdb=self.entities_vdb,
                     global_config=asdict(self),
                 )
+                if maybe_new_kg is None:
+                    logger.warning("No new entities found")
+                    return
+                self.chunk_entity_relation_graph = maybe_new_kg
+                
             else:
-                logger.info("[Hierachical Entity Extraction]...")
-                maybe_new_kg = await self.hierarchical_entity_extraction_func(
+                logger.info("[Hierarchical Entity Extraction]...")
+                raw_nodes, raw_edges = await self.hierarchical_entity_extraction_func(
                     inserting_chunks,
                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                     entity_vdb=self.entities_vdb,
                     global_config=asdict(self),
                 )
-
-            if maybe_new_kg is None:
-                logger.warning("No new entities found")
-                return
-            self.chunk_entity_relation_graph = maybe_new_kg
+                
+                if not raw_nodes:
+                    logger.warning("No new entities found")
+                    return
+                
+                # Apply Entity Disambiguation and Merging (EDM) pipeline
+                if self.enable_entity_disambiguation and self.disambiguator:
+                    logger.info("[Entity Disambiguation and Merging]...")
+                    try:
+                        name_to_canonical_map = await self.disambiguator.run(raw_nodes)
+                        
+                        # Log disambiguation statistics
+                        from ._disambiguation import log_disambiguation_statistics
+                        stats = log_disambiguation_statistics(raw_nodes, name_to_canonical_map, logger)
+                        
+                        logger.info(f"EDM pipeline completed successfully. Generated {len(name_to_canonical_map)} mappings")
+                        
+                    except Exception as e:
+                        logger.error(f"EDM pipeline failed: {e}", exc_info=True)
+                        logger.warning("Proceeding without entity disambiguation")
+                        name_to_canonical_map = {}
+                else:
+                    logger.info("Entity disambiguation disabled or not available")
+                    name_to_canonical_map = {}
+                
+                # Upsert disambiguated graph
+                try:
+                    await self._upsert_disambiguated_graph(raw_nodes, raw_edges, name_to_canonical_map)
+                except Exception as e:
+                    logger.error(f"Failed to upsert disambiguated graph: {e}", exc_info=True)
+                    raise
 
             logger.info("[Community Report]...")
             await self.chunk_entity_relation_graph.clustering(
@@ -282,6 +379,155 @@ class HiRAG:
             await self.text_chunks.upsert(inserting_chunks)
         finally:
             await self._insert_done()
+
+    async def _upsert_disambiguated_graph(
+        self, 
+        raw_nodes: List[Dict], 
+        raw_edges: List[Dict], 
+        name_to_canonical_map: Dict[str, str]
+    ) -> None:
+        """
+        Upserts disambiguated entities and relations to the knowledge graph.
+        
+        This method is the heart of the EDM execution logic. It groups raw nodes and edges
+        by their canonical names (using the disambiguation mapping) and then uses the
+        existing, trusted, database-aware merge functions to consolidate the data.
+        
+        Args:
+            raw_nodes: List of raw entity dictionaries from extraction
+            raw_edges: List of raw relation dictionaries from extraction  
+            name_to_canonical_map: Mapping from alias names to canonical names
+        """
+        logger.info(f"Upserting {len(raw_nodes)} entities and {len(raw_edges)} relations with {len(name_to_canonical_map)} disambiguations")
+        
+        # Import the merge functions from _op
+        from ._op import _merge_nodes_then_upsert, _merge_edges_then_upsert
+        from collections import defaultdict
+        
+        # Group raw nodes by canonical names
+        nodes_by_canonical = defaultdict(list)
+        for node in raw_nodes:
+            entity_name = node["entity_name"]
+            canonical_name = name_to_canonical_map.get(entity_name, entity_name)
+            # Store the canonical name in the node for consistency
+            node_copy = node.copy()
+            node_copy["entity_name"] = canonical_name
+            nodes_by_canonical[canonical_name].append(node_copy)
+        
+        # Group raw edges by canonical source-target pairs, avoiding self-loops
+        edges_by_canonical = defaultdict(list)
+        for edge in raw_edges:
+            src_name = edge["src_id"]
+            tgt_name = edge["tgt_id"]
+            
+            # Apply canonical mapping
+            canonical_src = name_to_canonical_map.get(src_name, src_name)
+            canonical_tgt = name_to_canonical_map.get(tgt_name, tgt_name)
+            
+            # Skip self-loops that might result from disambiguation
+            if canonical_src == canonical_tgt:
+                logger.debug(f"Skipping self-loop: {canonical_src} -> {canonical_tgt}")
+                continue
+            
+            # Create canonical edge key (sorted for undirected graph)
+            canonical_pair = tuple(sorted([canonical_src, canonical_tgt]))
+            
+            # Update edge with canonical names
+            edge_copy = edge.copy()
+            edge_copy["src_id"] = canonical_src
+            edge_copy["tgt_id"] = canonical_tgt
+            
+            edges_by_canonical[canonical_pair].append(edge_copy)
+        
+        logger.info(f"Grouped into {len(nodes_by_canonical)} canonical entities and {len(edges_by_canonical)} canonical relations")
+        
+        # Merge and upsert nodes using existing merge function
+        node_merge_tasks = []
+        for canonical_name, node_instances in nodes_by_canonical.items():
+            task = _merge_nodes_then_upsert(
+                canonical_name,
+                node_instances, 
+                self.chunk_entity_relation_graph,
+                asdict(self)
+            )
+            node_merge_tasks.append(task)
+        
+        logger.info("Merging and upserting entities...")
+        merged_entities_data = await asyncio.gather(
+            *node_merge_tasks,
+            return_exceptions=True
+        )
+        
+        # Handle any errors from node merging
+        successful_entities = []
+        for i, result in enumerate(merged_entities_data):
+            if isinstance(result, Exception):
+                canonical_name = list(nodes_by_canonical.keys())[i]
+                logger.error(f"Error merging entity '{canonical_name}': {result}")
+            else:
+                successful_entities.append(result)
+        
+        logger.info(f"Successfully merged {len(successful_entities)} entities")
+        
+        # Merge and upsert edges using existing merge function
+        edge_merge_tasks = []
+        for canonical_pair, edge_instances in edges_by_canonical.items():
+            src, tgt = canonical_pair
+            task = _merge_edges_then_upsert(
+                src,
+                tgt,
+                edge_instances,
+                self.chunk_entity_relation_graph,
+                asdict(self)
+            )
+            edge_merge_tasks.append(task)
+        
+        logger.info("Merging and upserting relations...")
+        merged_edges_results = await asyncio.gather(
+            *edge_merge_tasks,
+            return_exceptions=True
+        )
+        
+        # Handle any errors from edge merging
+        successful_edges = 0
+        for i, result in enumerate(merged_edges_results):
+            if isinstance(result, Exception):
+                canonical_pair = list(edges_by_canonical.keys())[i]
+                logger.error(f"Error merging edge '{canonical_pair}': {result}")
+            else:
+                successful_edges += 1
+        
+        logger.info(f"Successfully merged {successful_edges} relations")
+        
+        # Upsert the final, canonical entities to the vector database if enabled
+        if self.entities_vdb and successful_entities:
+            logger.info("Upserting canonical entities to vector database...")
+            try:
+                # Prepare data for vector database
+                from ._utils import compute_mdhash_id
+                
+                data_for_vdb = {}
+                for entity_data in successful_entities:
+                    if entity_data and isinstance(entity_data, dict):
+                        entity_name = entity_data.get("entity_name")
+                        description = entity_data.get("description", "")
+                        
+                        if entity_name:
+                            # Use the same key format as the original code
+                            vdb_key = compute_mdhash_id(entity_name, prefix="ent-")
+                            data_for_vdb[vdb_key] = {
+                                "content": entity_name + description,
+                                "entity_name": entity_name,
+                            }
+                
+                if data_for_vdb:
+                    await self.entities_vdb.upsert(data_for_vdb)
+                    logger.info(f"Upserted {len(data_for_vdb)} entities to vector database")
+                
+            except Exception as e:
+                logger.error(f"Error upserting entities to vector database: {e}")
+        
+        logger.info("Disambiguated graph upsert completed successfully")
 
     # --------------------------------------------------------------------------
     # --- NEW AGENT TOOLKIT METHODS ---
