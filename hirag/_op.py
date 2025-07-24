@@ -22,6 +22,7 @@ from ._utils import (
     truncate_list_by_token_size,
 )
 from ._validation import validate
+from ._error_handling import ErrorSeverity, get_error_handler
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -112,24 +113,75 @@ def chunking_by_seperators(
 
 
 def get_chunks(new_docs, chunk_func=chunking_by_token_size, **chunk_func_params):
+    """Get text chunks from documents with error handling."""
     inserting_chunks = {}
+    error_handler = get_error_handler()
+    
+    try:
+        new_docs_list = list(new_docs.items())
+        docs = [new_doc[1]["content"] for new_doc in new_docs_list]
+        doc_keys = [new_doc[0] for new_doc in new_docs_list]
 
-    new_docs_list = list(new_docs.items())
-    docs = [new_doc[1]["content"] for new_doc in new_docs_list]
-    doc_keys = [new_doc[0] for new_doc in new_docs_list]
+        logger.info(f"[TEXT_CHUNKING] Processing {len(docs)} documents into chunks")
+        
+        try:
+            ENCODER = tiktoken.encoding_for_model("gpt-4o")
+            tokens = ENCODER.encode_batch(docs, num_threads=16)
+            logger.debug(f"[TEXT_CHUNKING] Successfully encoded {len(docs)} documents")
+        except Exception as e:
+            error_handler.handle_operation_error(
+                error=e,
+                context="text_chunking",
+                operation_details="tiktoken encoding",
+                severity=ErrorSeverity.ERROR,
+                error_type="encoding_errors",
+                reraise=False
+            )
+            # Fallback to individual encoding
+            logger.warning("[TEXT_CHUNKING] Falling back to individual document encoding")
+            tokens = []
+            for doc in docs:
+                try:
+                    tokens.append(ENCODER.encode(doc))
+                except Exception as individual_error:
+                    logger.error(f"[TEXT_CHUNKING] Failed to encode individual document: {individual_error}")
+                    tokens.append([])  # Empty token list as fallback
+        
+        try:
+            chunks = chunk_func(
+                tokens, doc_keys=doc_keys, tiktoken_model=ENCODER, **chunk_func_params
+            )
+            logger.info(f"[TEXT_CHUNKING] Generated {len(chunks)} chunks from {len(docs)} documents")
+        except Exception as e:
+            error_handler.handle_operation_error(
+                error=e,
+                context="text_chunking",
+                operation_details="chunk function execution",
+                severity=ErrorSeverity.ERROR,
+                reraise=False
+            )
+            # Return empty chunks as fallback
+            return {}
 
-    ENCODER = tiktoken.encoding_for_model("gpt-4o")
-    tokens = ENCODER.encode_batch(docs, num_threads=16)
-    chunks = chunk_func(
-        tokens, doc_keys=doc_keys, tiktoken_model=ENCODER, **chunk_func_params
-    )
+        for chunk in chunks:
+            try:
+                chunk_id = compute_mdhash_id(chunk["content"], prefix="chunk-")
+                inserting_chunks[chunk_id] = chunk
+            except Exception as e:
+                logger.warning(f"[TEXT_CHUNKING] Failed to process chunk: {e}")
+                continue
 
-    for chunk in chunks:
-        inserting_chunks.update(
-            {compute_mdhash_id(chunk["content"], prefix="chunk-"): chunk}
+        logger.info(f"[TEXT_CHUNKING] Successfully created {len(inserting_chunks)} unique chunks")
+        return inserting_chunks
+        
+    except Exception as e:
+        error_handler.handle_operation_error(
+            error=e,
+            context="text_chunking",
+            operation_details="get_chunks function",
+            severity=ErrorSeverity.ERROR
         )
-
-    return inserting_chunks
+        return {}
 
 
 async def _handle_entity_relation_summary(
@@ -137,63 +189,109 @@ async def _handle_entity_relation_summary(
     description: str,
     global_config: dict,
 ) -> str:
-    """Summarize the entity or relation description,is used during entity extraction and when merging nodes or edges in the knowledge graph
+    """Summarize the entity or relation description with error handling."""
+    error_handler = get_error_handler()
+    
+    try:
+        use_llm_func: callable = global_config["cheap_model_func"]
+        llm_max_tokens = global_config["cheap_model_max_token_size"]
+        tiktoken_model_name = global_config["tiktoken_model_name"]
+        summary_max_tokens = global_config["entity_summary_to_max_tokens"]
 
-    Args:
-        entity_or_relation_name: entity or relation name
-        description: description
-        global_config: global configuration
-    """
-    use_llm_func: callable = global_config["cheap_model_func"]
-    llm_max_tokens = global_config["cheap_model_max_token_size"]
-    tiktoken_model_name = global_config["tiktoken_model_name"]
-    summary_max_tokens = global_config["entity_summary_to_max_tokens"]
-
-    tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
-    if len(tokens) < summary_max_tokens:  # No need for summary
+        tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
+        if len(tokens) < summary_max_tokens:  # No need for summary
+            logger.debug(f"[ENTITY_SUMMARY] No summary needed for {entity_or_relation_name} (tokens: {len(tokens)})")
+            return description
+            
+        prompt_template = PROMPTS["summarize_entity_descriptions"]
+        use_description = decode_tokens_by_tiktoken(
+            tokens[:llm_max_tokens], model_name=tiktoken_model_name
+        )
+        context_base = dict(
+            entity_name=entity_or_relation_name,
+            description_list=use_description.split(GRAPH_FIELD_SEP),
+        )
+        use_prompt = prompt_template.format(**context_base)
+        logger.debug(f"[ENTITY_SUMMARY] Triggering summary for: {entity_or_relation_name}")
+        
+        try:
+            summary = await use_llm_func(use_prompt, max_tokens=summary_max_tokens)
+            logger.debug(f"[ENTITY_SUMMARY] Successfully summarized {entity_or_relation_name}")
+            return summary
+        except Exception as e:
+            error_handler.handle_operation_error(
+                error=e,
+                context="llm_operations",
+                operation_details=f"Entity summary for {entity_or_relation_name}",
+                severity=ErrorSeverity.WARNING,
+                error_type="api_errors",
+                reraise=False
+            )
+            # Return original description as fallback
+            logger.warning(f"[ENTITY_SUMMARY] Using original description for {entity_or_relation_name}")
+            return description
+            
+    except Exception as e:
+        error_handler.handle_operation_error(
+            error=e,
+            context="entity_extraction",
+            operation_details=f"Entity/relation summary for {entity_or_relation_name}",
+            severity=ErrorSeverity.ERROR,
+            reraise=False
+        )
+        # Return original description as fallback
         return description
-    prompt_template = PROMPTS["summarize_entity_descriptions"]
-    use_description = decode_tokens_by_tiktoken(
-        tokens[:llm_max_tokens], model_name=tiktoken_model_name
-    )
-    context_base = dict(
-        entity_name=entity_or_relation_name,
-        description_list=use_description.split(GRAPH_FIELD_SEP),
-    )
-    use_prompt = prompt_template.format(**context_base)
-    logger.debug(f"Trigger summary: {entity_or_relation_name}")
-    summary = await use_llm_func(use_prompt, max_tokens=summary_max_tokens)
-    return summary
 
 
 async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    # The tuple now has 5 elements: ("entity", name, type, desc, is_temporary)
-    if not validate("record_attributes_for_entity", record_attributes):
+    """Handle single entity extraction with validation and error handling."""
+    error_handler = get_error_handler()
+    
+    try:
+        # The tuple now has 5 elements: ("entity", name, type, desc, is_temporary)
+        if not validate("record_attributes_for_entity", record_attributes):
+            logger.warning(f"[ENTITY_EXTRACTION] Invalid entity record format: {record_attributes[:2] if len(record_attributes) > 1 else record_attributes}")
+            return None
+
+        entity_name = clean_str(record_attributes[1].upper())
+        if not entity_name.strip():
+            logger.warning(f"[ENTITY_EXTRACTION] Empty entity name in chunk {chunk_key}")
+            return None
+            
+        entity_type = clean_str(
+            record_attributes[2].lower()
+        )  # Standardize to lowercase for consistency
+        entity_description = clean_str(record_attributes[3])
+
+        # Parse the new 'is_temporary' field
+        is_temporary_str = clean_str(record_attributes[4].lower())
+        is_temporary = is_temporary_str == "true"
+
+        entity_source_id = chunk_key
+        
+        result = dict(
+            entity_name=entity_name,
+            entity_type=entity_type,
+            description=entity_description,
+            source_id=entity_source_id,
+            is_temporary=is_temporary,  # Add the new property to the dictionary
+        )
+        
+        logger.debug(f"[ENTITY_EXTRACTION] Successfully extracted entity: {entity_name}")
+        return result
+        
+    except Exception as e:
+        error_handler.handle_operation_error(
+            error=e,
+            context="entity_extraction",
+            operation_details=f"Single entity extraction for chunk {chunk_key}",
+            severity=ErrorSeverity.WARNING,
+            reraise=False
+        )
         return None
-
-    entity_name = clean_str(record_attributes[1].upper())
-    if not entity_name.strip():
-        return None
-    entity_type = clean_str(
-        record_attributes[2].lower()
-    )  # Standardize to lowercase for consistency
-    entity_description = clean_str(record_attributes[3])
-
-    # Parse the new 'is_temporary' field
-    is_temporary_str = clean_str(record_attributes[4].lower())
-    is_temporary = is_temporary_str == "true"
-
-    entity_source_id = chunk_key
-    return dict(
-        entity_name=entity_name,
-        entity_type=entity_type,
-        description=entity_description,
-        source_id=entity_source_id,
-        is_temporary=is_temporary,  # Add the new property to the dictionary
-    )
 
 
 async def _handle_single_relationship_extraction(

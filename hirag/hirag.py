@@ -10,6 +10,15 @@ import tiktoken
 
 from hirag._storage.gdb_neo4j import Neo4jStorage
 
+from ._error_handling import (
+    ErrorConfig, 
+    HiRAGErrorHandler, 
+    ErrorSeverity,
+    error_handler,
+    get_error_handler,
+    set_error_handler
+)
+
 from ._llm import (
     gpt_4o_complete,
     gpt_4o_mini_complete,
@@ -64,6 +73,11 @@ class HiRAG:
     enable_local: bool = True
     enable_naive_rag: bool = False
     enable_hierachical_mode: bool = True
+    
+    # --- Error handling configuration ---
+    error_config: ErrorConfig = field(default_factory=ErrorConfig)
+    enable_comprehensive_error_logging: bool = True
+    
     chunk_func: Callable[
         [
             list[list[int]],
@@ -124,78 +138,128 @@ class HiRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"HiRAG init with param:\n\n  {_print_config}\n")
 
-        if self.using_azure_openai:
-            if self.best_model_func == gpt_4o_complete:
-                self.best_model_func = azure_gpt_4o_complete
-            if self.cheap_model_func == gpt_4o_mini_complete:
-                self.cheap_model_func = azure_gpt_4o_mini_complete
-            if self.embedding_func == openai_embedding:
-                self.embedding_func = azure_openai_embedding
-            logger.info(
-                "Switched the default openai funcs to Azure OpenAI if you didn't set any of it"
-            )
+        # Initialize error handler
+        self.error_handler = HiRAGErrorHandler(self.error_config)
+        set_error_handler(self.error_handler)
+        
+        if self.enable_comprehensive_error_logging:
+            logger.info("[INITIALIZATION] Comprehensive error logging enabled")
 
-        if self.using_gemini:
-            logger.info("Using Gemini models")
-            self.best_model_func = gemini_pro_complete
-            self.cheap_model_func = gemini_flash_complete
-            self.embedding_func = gemini_embedding
+        try:
+            if self.using_azure_openai:
+                if self.best_model_func == gpt_4o_complete:
+                    self.best_model_func = azure_gpt_4o_complete
+                if self.cheap_model_func == gpt_4o_mini_complete:
+                    self.cheap_model_func = azure_gpt_4o_mini_complete
+                if self.embedding_func == openai_embedding:
+                    self.embedding_func = azure_openai_embedding
+                logger.info(
+                    "Switched the default openai funcs to Azure OpenAI if you didn't set any of it"
+                )
 
-        if not os.path.exists(self.working_dir) and self.always_create_working_dir:
-            logger.info(f"Creating working directory {self.working_dir}")
-            os.makedirs(self.working_dir)
+            if self.using_gemini:
+                logger.info("Using Gemini models")
+                self.best_model_func = gemini_pro_complete
+                self.cheap_model_func = gemini_flash_complete
+                self.embedding_func = gemini_embedding
 
-        self.full_docs = self.key_string_value_json_storage_cls(
-            namespace="full_docs", global_config=asdict(self)
-        )
-        self.text_chunks = self.key_string_value_json_storage_cls(
-            namespace="text_chunks", global_config=asdict(self)
-        )
-        self.llm_response_cache = (
-            self.key_string_value_json_storage_cls(
-                namespace="llm_response_cache", global_config=asdict(self)
+            if not os.path.exists(self.working_dir) and self.always_create_working_dir:
+                logger.info(f"Creating working directory {self.working_dir}")
+                os.makedirs(self.working_dir)
+
+            self.full_docs = self.key_string_value_json_storage_cls(
+                namespace="full_docs", global_config=asdict(self)
             )
-            if self.enable_llm_cache
-            else None
-        )
-        self.community_reports = self.key_string_value_json_storage_cls(
-            namespace="community_reports", global_config=asdict(self)
-        )
-        self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace="chunk_entity_relation", global_config=asdict(self)
-        )
-        self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
-            self.embedding_func
-        )
-        self.entities_vdb = (
-            self.vector_db_storage_cls(
-                namespace="entities",
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-                meta_fields={"entity_name"},
+            self.text_chunks = self.key_string_value_json_storage_cls(
+                namespace="text_chunks", global_config=asdict(self)
             )
-            if self.enable_local
-            else None
-        )
-        self.chunks_vdb = (
-            self.vector_db_storage_cls(
-                namespace="chunks",
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
+            self.llm_response_cache = (
+                self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache", global_config=asdict(self)
+                )
+                if self.enable_llm_cache
+                else None
             )
-            if self.enable_naive_rag
-            else None
-        )
-        self.best_model_func = limit_async_func_call(self.best_model_max_async)(
-            partial(self.best_model_func, hashing_kv=self.llm_response_cache)
-        )
-        self.cheap_model_func = limit_async_func_call(self.cheap_model_max_async)(
-            partial(self.cheap_model_func, hashing_kv=self.llm_response_cache)
-        )
+            self.community_reports = self.key_string_value_json_storage_cls(
+                namespace="community_reports", global_config=asdict(self)
+            )
+            self.chunk_entity_relation_graph = self.graph_storage_cls(
+                namespace="chunk_entity_relation", global_config=asdict(self)
+            )
+            self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
+                self.embedding_func
+            )
+            self.entities_vdb = (
+                self.vector_db_storage_cls(
+                    namespace="entities",
+                    global_config=asdict(self),
+                    embedding_func=self.embedding_func,
+                    meta_fields={"entity_name"},
+                )
+                if self.enable_local
+                else None
+            )
+            self.chunks_vdb = (
+                self.vector_db_storage_cls(
+                    namespace="chunks",
+                    global_config=asdict(self),
+                    embedding_func=self.embedding_func,
+                )
+                if self.enable_naive_rag
+                else None
+            )
+            self.best_model_func = limit_async_func_call(self.best_model_max_async)(
+                partial(self.best_model_func, hashing_kv=self.llm_response_cache)
+            )
+            self.cheap_model_func = limit_async_func_call(self.cheap_model_max_async)(
+                partial(self.cheap_model_func, hashing_kv=self.llm_response_cache)
+            )
+            
+            logger.info("[INITIALIZATION] HiRAG initialized successfully")
+            
+        except Exception as e:
+            self.error_handler.handle_operation_error(
+                error=e,
+                context="initialization", 
+                operation_details="HiRAG.__post_init__",
+                severity=ErrorSeverity.CRITICAL,
+                error_type="configuration_errors"
+            )
 
     def insert(self, string_or_strings):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.ainsert(string_or_strings))
+
+    def configure_error_handling(self, should_break: Optional[Dict[str, bool]] = None, **kwargs):
+        """
+        Configure error handling behavior for the HiRAG instance.
+        
+        Args:
+            should_break: Dictionary mapping context names to whether errors should break the pipeline
+            **kwargs: Additional error configuration options
+            
+        Example:
+            hirag.configure_error_handling({
+                "entity_extraction": True,  # Break on entity extraction errors
+                "clustering": False,        # Continue on clustering errors
+                "network_errors": False     # Continue on network errors
+            })
+        """
+        if should_break:
+            self.error_config.should_break.update(should_break)
+            
+        # Update any other configuration parameters
+        for key, value in kwargs.items():
+            if hasattr(self.error_config, key):
+                setattr(self.error_config, key, value)
+                
+        # Update the error handler configuration
+        self.error_handler.config = self.error_config
+        logger.info(f"[ERROR_CONFIG] Updated error handling configuration: {should_break}")
+        
+    def get_error_summary(self) -> Dict[str, int]:
+        """Get a summary of errors that have occurred during operations."""
+        return self.error_handler.get_error_summary()
 
     def query(self, query: str, param: QueryParam = QueryParam()):
         """
@@ -210,76 +274,211 @@ class HiRAG:
         return loop.run_until_complete(self.aquery(query, param))
 
     async def ainsert(self, string_or_strings):
-        # --- ainsert logic remains the same, as it's the core indexing pipeline ---
+        # --- ainsert logic with comprehensive error handling ---
         await self._insert_start()
+        
         try:
-            if isinstance(string_or_strings, str):
-                string_or_strings = [string_or_strings]
-            new_docs = {
-                compute_mdhash_id(c.strip(), prefix="doc-"): {"content": c.strip()}
-                for c in string_or_strings
-            }
-            _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
-            new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
-            if not len(new_docs):
-                logger.warning("All docs are already in the storage")
-                return
-            logger.info(f"[New Docs] inserting {len(new_docs)} docs")
+            logger.info("[PIPELINE_START] Beginning document insertion pipeline")
+            
+            # Document processing stage
+            try:
+                if isinstance(string_or_strings, str):
+                    string_or_strings = [string_or_strings]
+                    
+                new_docs = {
+                    compute_mdhash_id(c.strip(), prefix="doc-"): {"content": c.strip()}
+                    for c in string_or_strings
+                }
+                logger.info(f"[DOCUMENT_PROCESSING] Processing {len(new_docs)} documents")
+                
+                _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
+                new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
+                
+                if not len(new_docs):
+                    logger.warning("[DOCUMENT_PROCESSING] All docs are already in the storage")
+                    return
+                    
+                logger.info(f"[DOCUMENT_PROCESSING] {len(new_docs)} new documents to process")
+                
+            except Exception as e:
+                should_continue = self.error_handler.handle_operation_error(
+                    error=e,
+                    context="document_processing",
+                    operation_details="Document hashing and deduplication",
+                    severity=ErrorSeverity.ERROR,
+                    reraise=False
+                )
+                if not should_continue:
+                    return
 
-            inserting_chunks = get_chunks(
-                new_docs=new_docs,
-                chunk_func=self.chunk_func,
-                overlap_token_size=self.chunk_overlap_token_size,
-                max_token_size=self.chunk_token_size,
-            )
-            _add_chunk_keys = await self.text_chunks.filter_keys(
-                list(inserting_chunks.keys())
-            )
-            inserting_chunks = {
-                k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
-            }
-            if not len(inserting_chunks):
-                logger.warning("All chunks are already in the storage")
-                return
-            logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
+            # Text chunking stage
+            try:
+                logger.info("[TEXT_CHUNKING] Starting text chunking process")
+                inserting_chunks = get_chunks(
+                    new_docs=new_docs,
+                    chunk_func=self.chunk_func,
+                    overlap_token_size=self.chunk_overlap_token_size,
+                    max_token_size=self.chunk_token_size,
+                )
+                
+                _add_chunk_keys = await self.text_chunks.filter_keys(
+                    list(inserting_chunks.keys())
+                )
+                inserting_chunks = {
+                    k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
+                }
+                
+                if not len(inserting_chunks):
+                    logger.warning("[TEXT_CHUNKING] All chunks are already in the storage")
+                    return
+                    
+                logger.info(f"[TEXT_CHUNKING] Generated {len(inserting_chunks)} new chunks")
+                
+            except Exception as e:
+                should_continue = self.error_handler.handle_operation_error(
+                    error=e,
+                    context="text_chunking",
+                    operation_details="Text chunking and token processing",
+                    severity=ErrorSeverity.ERROR
+                )
+                if not should_continue:
+                    return
+
+            # Naive RAG processing (if enabled)
             if self.enable_naive_rag:
-                logger.info("Insert chunks for naive RAG")
-                await self.chunks_vdb.upsert(inserting_chunks)
+                try:
+                    logger.info("[VECTOR_OPERATIONS] Inserting chunks for naive RAG")
+                    await self.chunks_vdb.upsert(inserting_chunks)
+                except Exception as e:
+                    should_continue = self.error_handler.handle_operation_error(
+                        error=e,
+                        context="vector_operations",
+                        operation_details="Naive RAG chunk insertion",
+                        severity=ErrorSeverity.WARNING,
+                        reraise=False
+                    )
+                    # Continue even if this fails, as it's not critical
 
-            await self.community_reports.drop()
-
-            if not self.enable_hierachical_mode:
-                logger.info("[Entity Extraction]...")
-                maybe_new_kg = await self.entity_extraction_func(
-                    inserting_chunks,
-                    knwoledge_graph_inst=self.chunk_entity_relation_graph,
-                    entity_vdb=self.entities_vdb,
-                    global_config=asdict(self),
+            # Clear community reports for regeneration
+            try:
+                await self.community_reports.drop()
+                logger.debug("[STORAGE_OPERATIONS] Cleared existing community reports")
+            except Exception as e:
+                self.error_handler.handle_operation_error(
+                    error=e,
+                    context="storage_operations",
+                    operation_details="Community reports cleanup",
+                    severity=ErrorSeverity.WARNING,
+                    reraise=False
                 )
-            else:
-                logger.info("[Hierachical Entity Extraction]...")
-                maybe_new_kg = await self.hierarchical_entity_extraction_func(
-                    inserting_chunks,
-                    knowledge_graph_inst=self.chunk_entity_relation_graph,
-                    entity_vdb=self.entities_vdb,
-                    global_config=asdict(self),
+
+            # Entity extraction stage
+            try:
+                if not self.enable_hierachical_mode:
+                    logger.info("[ENTITY_EXTRACTION] Starting standard entity extraction...")
+                    maybe_new_kg = await self.entity_extraction_func(
+                        inserting_chunks,
+                        knwoledge_graph_inst=self.chunk_entity_relation_graph,
+                        entity_vdb=self.entities_vdb,
+                        global_config=asdict(self),
+                    )
+                else:
+                    logger.info("[ENTITY_EXTRACTION] Starting hierarchical entity extraction...")
+                    maybe_new_kg = await self.hierarchical_entity_extraction_func(
+                        inserting_chunks,
+                        knowledge_graph_inst=self.chunk_entity_relation_graph,
+                        entity_vdb=self.entities_vdb,
+                        global_config=asdict(self),
+                    )
+
+                if maybe_new_kg is None:
+                    logger.warning("[ENTITY_EXTRACTION] No new entities found")
+                    return
+                    
+                self.chunk_entity_relation_graph = maybe_new_kg
+                logger.info("[ENTITY_EXTRACTION] Entity extraction completed successfully")
+                
+            except Exception as e:
+                should_continue = self.error_handler.handle_operation_error(
+                    error=e,
+                    context="entity_extraction",
+                    operation_details="Entity extraction from text chunks",
+                    severity=ErrorSeverity.ERROR,
+                    reraise=False
+                )
+                if not should_continue:
+                    return
+
+            # Clustering stage
+            try:
+                logger.info("[CLUSTERING] Starting graph clustering...")
+                await self.chunk_entity_relation_graph.clustering(
+                    self.graph_cluster_algorithm
+                )
+                logger.info(f"[CLUSTERING] Completed clustering using {self.graph_cluster_algorithm}")
+                
+            except Exception as e:
+                should_continue = self.error_handler.handle_operation_error(
+                    error=e,
+                    context="clustering",
+                    operation_details=f"Graph clustering with {self.graph_cluster_algorithm}",
+                    severity=ErrorSeverity.ERROR,
+                    reraise=False
+                )
+                if not should_continue:
+                    return
+
+            # Community report generation
+            try:
+                logger.info("[COMMUNITY_REPORTS] Generating community reports...")
+                await generate_community_report(
+                    self.community_reports, self.chunk_entity_relation_graph, asdict(self)
+                )
+                logger.info("[COMMUNITY_REPORTS] Community report generation completed")
+                
+            except Exception as e:
+                should_continue = self.error_handler.handle_operation_error(
+                    error=e,
+                    context="community_reports",
+                    operation_details="Community report generation",
+                    severity=ErrorSeverity.WARNING,
+                    reraise=False
+                )
+                # Continue even if community reports fail
+
+            # Final storage operations
+            try:
+                await self.full_docs.upsert(new_docs)
+                await self.text_chunks.upsert(inserting_chunks)
+                logger.info("[STORAGE_OPERATIONS] Successfully stored all documents and chunks")
+                
+            except Exception as e:
+                self.error_handler.handle_operation_error(
+                    error=e,
+                    context="storage_operations",
+                    operation_details="Final document and chunk storage",
+                    severity=ErrorSeverity.CRITICAL,
+                    error_type="storage_operations"
                 )
 
-            if maybe_new_kg is None:
-                logger.warning("No new entities found")
-                return
-            self.chunk_entity_relation_graph = maybe_new_kg
-
-            logger.info("[Community Report]...")
-            await self.chunk_entity_relation_graph.clustering(
-                self.graph_cluster_algorithm
+            logger.info("[PIPELINE_COMPLETE] Document insertion pipeline completed successfully")
+            
+            # Log error summary
+            error_summary = self.error_handler.get_error_summary()
+            if error_summary:
+                logger.info(f"[PIPELINE_SUMMARY] Error counts by context: {error_summary}")
+                
+        except Exception as e:
+            # Catch any unexpected errors that weren't handled above
+            self.error_handler.handle_operation_error(
+                error=e,
+                context="pipeline_critical",
+                operation_details="Unhandled error in insertion pipeline",
+                severity=ErrorSeverity.CRITICAL,
+                reraise=False
             )
-            await generate_community_report(
-                self.community_reports, self.chunk_entity_relation_graph, asdict(self)
-            )
-
-            await self.full_docs.upsert(new_docs)
-            await self.text_chunks.upsert(inserting_chunks)
+            logger.error("[PIPELINE_FAILED] Insertion pipeline failed with unhandled error")
+            
         finally:
             await self._insert_done()
 
@@ -333,38 +532,51 @@ class HiRAG:
         Returns:
             A list of dictionaries, each representing a found entity from the VDB.
         """
-        logger.info(f"Finding entities for query: '{query}' (temporary={temporary})")
-        # Over-fetch if filtering is needed, as it's a post-processing step.
-        fetch_k = top_k * 3 if temporary is not None else top_k
+        try:
+            logger.info(f"[ENTITY_SEARCH] Finding entities for query: '{query}' (temporary={temporary})")
+            # Over-fetch if filtering is needed, as it's a post-processing step.
+            fetch_k = top_k * 3 if temporary is not None else top_k
 
-        vdb_results = await self.entities_vdb.query(query, top_k=fetch_k)
-        if not vdb_results:
-            return []
+            vdb_results = await self.entities_vdb.query(query, top_k=fetch_k)
+            if not vdb_results:
+                logger.info(f"[ENTITY_SEARCH] No entities found for query: '{query}'")
+                return []
 
-        if temporary is None:
-            return vdb_results[:top_k]
+            if temporary is None:
+                return vdb_results[:top_k]
 
-        # Post-filter the results based on the 'is_temporary' flag
-        filtered_results = []
-        entity_names_to_fetch = [res["entity_name"] for res in vdb_results]
+            # Post-filter the results based on the 'is_temporary' flag
+            filtered_results = []
+            entity_names_to_fetch = [res["entity_name"] for res in vdb_results]
 
-        # Fetch all node details in one go for efficiency
-        node_details_list = await asyncio.gather(
-            *[self.aget_entity_details(name) for name in entity_names_to_fetch]
-        )
-        node_details_map = {
-            node["entity_name"]: node for node in node_details_list if node
-        }
+            # Fetch all node details in one go for efficiency
+            node_details_list = await asyncio.gather(
+                *[self.aget_entity_details(name) for name in entity_names_to_fetch]
+            )
+            node_details_map = {
+                node["entity_name"]: node for node in node_details_list if node
+            }
 
-        for res in vdb_results:
-            entity_name = res["entity_name"]
-            node = node_details_map.get(entity_name)
-            if node and node.get("is_temporary") == temporary:
-                filtered_results.append(res)
-            if len(filtered_results) >= top_k:
-                break
+            for res in vdb_results:
+                entity_name = res["entity_name"]
+                node = node_details_map.get(entity_name)
+                if node and node.get("is_temporary") == temporary:
+                    filtered_results.append(res)
+                if len(filtered_results) >= top_k:
+                    break
 
-        return filtered_results
+            logger.info(f"[ENTITY_SEARCH] Found {len(filtered_results)} entities matching criteria")
+            return filtered_results
+            
+        except Exception as e:
+            should_continue = self.error_handler.handle_operation_error(
+                error=e,
+                context="vector_operations",
+                operation_details=f"Entity search for query: '{query}'",
+                severity=ErrorSeverity.ERROR,
+                reraise=False
+            )
+            return [] if should_continue else []
 
     async def aget_entity_details(self, entity_name: str) -> Optional[Dict]:
         """
