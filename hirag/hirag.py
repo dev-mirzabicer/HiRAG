@@ -28,8 +28,12 @@ from ._op import (
     extract_hierarchical_entities,
     generate_community_report,
     get_chunks,
+    _merge_nodes_then_upsert,
+    _merge_edges_then_upsert,
+    _handle_entity_relation_summary,
     # All query functions are now deprecated and will be removed/replaced by the agent's logic
 )
+from ._disambiguation import EntityDisambiguator
 from ._storage import (
     JsonKVStorage,
     NanoVectorDBStorage,
@@ -118,6 +122,11 @@ class HiRAG:
     always_create_working_dir: bool = True
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
+    
+    # Entity Disambiguation and Merging (EDM) Configuration
+    edm_name_sim_threshold: float = 0.90  # Lexical similarity threshold for candidate generation
+    edm_name_emb_sim_threshold: float = 0.95  # Semantic similarity threshold for candidate generation
+    edm_max_cluster_size: int = 10  # Maximum cluster size for LLM verification
 
     def __post_init__(self):
         # --- __post_init__ logic remains largely the same ---
@@ -192,6 +201,13 @@ class HiRAG:
         self.cheap_model_func = limit_async_func_call(self.cheap_model_max_async)(
             partial(self.cheap_model_func, hashing_kv=self.llm_response_cache)
         )
+        
+        # Initialize the Entity Disambiguator
+        self.disambiguator = EntityDisambiguator(
+            global_config=asdict(self),
+            text_chunks_kv=self.text_chunks,
+            embedding_func=self.embedding_func
+        )
 
     def insert(self, string_or_strings):
         loop = always_get_an_event_loop()
@@ -249,26 +265,31 @@ class HiRAG:
             await self.community_reports.drop()
 
             if not self.enable_hierachical_mode:
-                logger.info("[Entity Extraction]...")
-                maybe_new_kg = await self.entity_extraction_func(
+                logger.info("[Entity Extraction with EDM]...")
+                # Get raw entities and relationships without graph insertion
+                raw_nodes, raw_edges = await self.entity_extraction_func(
                     inserting_chunks,
-                    knwoledge_graph_inst=self.chunk_entity_relation_graph,
-                    entity_vdb=self.entities_vdb,
                     global_config=asdict(self),
                 )
             else:
-                logger.info("[Hierachical Entity Extraction]...")
-                maybe_new_kg = await self.hierarchical_entity_extraction_func(
+                logger.info("[Hierarchical Entity Extraction with EDM]...")
+                # Get raw entities and relationships without graph insertion  
+                raw_nodes, raw_edges = await self.hierarchical_entity_extraction_func(
                     inserting_chunks,
-                    knowledge_graph_inst=self.chunk_entity_relation_graph,
-                    entity_vdb=self.entities_vdb,
                     global_config=asdict(self),
                 )
 
-            if maybe_new_kg is None:
-                logger.warning("No new entities found")
+            if not raw_nodes and not raw_edges:
+                logger.warning("No new entities or relationships found")
                 return
-            self.chunk_entity_relation_graph = maybe_new_kg
+            
+            logger.info(f"[Entity Disambiguation] Processing {len(raw_nodes)} entities...")
+            # Apply Entity Disambiguation and Merging pipeline
+            final_nodes, final_edges = await self.disambiguator.run(raw_nodes, raw_edges)
+            
+            logger.info(f"[Graph Consolidation] Upserting {len(final_nodes)} nodes and {len(final_edges)} edges...")
+            # Consolidate the disambiguated entities into the knowledge graph
+            await self._upsert_consolidated_graph(final_nodes, final_edges)
 
             logger.info("[Community Report]...")
             await self.chunk_entity_relation_graph.clustering(
@@ -282,6 +303,117 @@ class HiRAG:
             await self.text_chunks.upsert(inserting_chunks)
         finally:
             await self._insert_done()
+
+    async def _upsert_consolidated_graph(self, final_nodes: List[Dict], final_edges: List[Dict]):
+        """
+        Upsert the consolidated (disambiguated) nodes and edges to the knowledge graph.
+        
+        This method takes the output from the Entity Disambiguation pipeline and properly
+        integrates it into the graph storage, handling entity summaries and vector indexing.
+        
+        Args:
+            final_nodes: List of disambiguated entity dictionaries
+            final_edges: List of disambiguated relationship dictionaries
+        """
+        if not final_nodes and not final_edges:
+            logger.warning("No nodes or edges to upsert")
+            return
+            
+        logger.info(f"Upserting {len(final_nodes)} nodes and {len(final_edges)} edges to graph storage...")
+        
+        # Process nodes: merge descriptions and upsert to graph
+        node_tasks = []
+        for node in final_nodes:
+            task = self._process_and_upsert_node(node)
+            node_tasks.append(task)
+        
+        if node_tasks:
+            await asyncio.gather(*node_tasks)
+        
+        # Process edges: merge descriptions and upsert to graph  
+        edge_tasks = []
+        for edge in final_edges:
+            task = self._process_and_upsert_edge(edge)
+            edge_tasks.append(task)
+            
+        if edge_tasks:
+            await asyncio.gather(*edge_tasks)
+            
+        logger.info("Graph consolidation complete")
+
+    async def _process_and_upsert_node(self, node: Dict):
+        """
+        Process and upsert a single node to the graph storage.
+        
+        Args:
+            node: Entity dictionary to be upserted
+        """
+        entity_name = node["entity_name"]
+        
+        # Check if entity already exists in graph
+        existing_node = await self.chunk_entity_relation_graph.get_node(entity_name)
+        
+        if existing_node:
+            # Merge with existing node
+            merged_node = await _merge_nodes_then_upsert(
+                entity_name, 
+                [node], 
+                self.chunk_entity_relation_graph,
+                asdict(self)
+            )
+        else:
+            # Summarize description if needed
+            if len(node.get("description", "")) > self.entity_summary_to_max_tokens:
+                logger.debug(f"Summarizing description for entity: {entity_name}")
+                node["description"] = await _handle_entity_relation_summary(
+                    node["description"], 
+                    asdict(self)
+                )
+            
+            # Upsert new node
+            await self.chunk_entity_relation_graph.upsert_node(entity_name, node)
+        
+        # Update entity vector database if enabled
+        if self.enable_local and self.entities_vdb and not node.get("is_temporary", False):
+            entity_data = {
+                entity_name: {
+                    "content": node.get("description", ""),
+                    "entity_name": entity_name
+                }
+            }
+            await self.entities_vdb.upsert(entity_data)
+
+    async def _process_and_upsert_edge(self, edge: Dict):
+        """
+        Process and upsert a single edge to the graph storage.
+        
+        Args:
+            edge: Relationship dictionary to be upserted  
+        """
+        src_id = edge["src_id"]
+        tgt_id = edge["tgt_id"]
+        
+        # Check if edge already exists
+        if await self.chunk_entity_relation_graph.has_edge(src_id, tgt_id):
+            # Merge with existing edge
+            await _merge_edges_then_upsert(
+                (src_id, tgt_id),
+                [edge],
+                self.chunk_entity_relation_graph,
+                asdict(self)
+            )
+        else:
+            # Summarize description if needed
+            if len(edge.get("description", "")) > self.entity_summary_to_max_tokens:
+                edge["description"] = await _handle_entity_relation_summary(
+                    edge["description"],
+                    asdict(self)
+                )
+            
+            # Upsert new edge
+            await self.chunk_entity_relation_graph.upsert_edge(
+                src_id, tgt_id, edge
+            )
 
     # --------------------------------------------------------------------------
     # --- NEW AGENT TOOLKIT METHODS ---

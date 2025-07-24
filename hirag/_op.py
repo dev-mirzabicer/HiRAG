@@ -6,7 +6,7 @@ import networkx as nx
 import time
 import logging
 from contextlib import contextmanager
-from typing import Union
+from typing import Union, Tuple, List, Dict
 from collections import Counter, defaultdict
 from ._splitter import SeparatorSplitter
 from ._utils import (
@@ -332,20 +332,16 @@ async def _merge_edges_then_upsert(
 # extract entities with normal and attribute entities
 async def extract_hierarchical_entities(
     chunks: dict[str, TextChunkSchema],
-    knowledge_graph_inst: BaseGraphStorage,
-    entity_vdb: BaseVectorStorage,
     global_config: dict,
-) -> Union[BaseGraphStorage, None]:
-    """Extract entities and relations from text chunks
+) -> Tuple[List[Dict], List[Dict]]:
+    """Extract entities and relations from text chunks and return raw data for disambiguation
 
     Args:
-        chunks: text chunks
-        knowledge_graph_inst: knowledge graph instance
-        entity_vdb: entity vector database
-        global_config: global configuration
+        chunks: text chunks to process
+        global_config: global configuration containing LLM functions and settings
 
     Returns:
-        Union[BaseGraphStorage, None]: knowledge graph instance
+        Tuple[List[Dict], List[Dict]]: (raw_nodes, raw_edges) for disambiguation pipeline
     """
     use_llm_func: callable = global_config["best_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -469,18 +465,21 @@ async def extract_hierarchical_entities(
         key[0]: list(x[0].keys()) for key, x in zip(ordered_chunks, entity_results)
     }
 
-    # fetch embeddings
-    entity_discriptions = [v["description"] for k, v in all_entities.items()]
+    # Get embedding function from global config
+    embedding_func = global_config["embedding_func"]
+    
+    # Fetch embeddings for all entities
+    entity_descriptions = [v["description"] for k, v in all_entities.items()]
     entity_sequence_embeddings = []
     embeddings_batch_size = 64
     num_embeddings_batches = (
-        len(entity_discriptions) + embeddings_batch_size - 1
+        len(entity_descriptions) + embeddings_batch_size - 1
     ) // embeddings_batch_size
     for i in range(num_embeddings_batches):
         start_index = i * embeddings_batch_size
-        end_index = min((i + 1) * embeddings_batch_size, len(entity_discriptions))
-        batch = entity_discriptions[start_index:end_index]
-        result = await entity_vdb.embedding_func(batch)
+        end_index = min((i + 1) * embeddings_batch_size, len(entity_descriptions))
+        batch = entity_descriptions[start_index:end_index]
+        result = await embedding_func(batch)
         entity_sequence_embeddings.extend(result)
     entity_embeddings = entity_sequence_embeddings
     for (k, v), x in zip(all_entities.items(), entity_embeddings):
@@ -590,12 +589,12 @@ async def extract_hierarchical_entities(
         for k, v in item[1].items():
             all_relations[k] = v
 
-    # TODO: hierarchical clustering
+    # Hierarchical clustering
     logger.info(f"[Hierarchical Clustering]")
     hierarchical_cluster = Hierarchical_Clustering()
     hierarchical_clustered_entities_relations = (
         await hierarchical_cluster.perform_clustering(
-            entity_vdb=entity_vdb, global_config=global_config, entities=all_entities
+            entity_vdb=None, global_config=global_config, entities=all_entities
         )
     )
     hierarchical_clustered_entities = [
@@ -607,53 +606,36 @@ async def extract_hierarchical_entities(
         for y in hierarchical_clustered_entities_relations
     ]
 
-    maybe_nodes = defaultdict(list)  # for all chunks
-    maybe_edges = defaultdict(list)
-    # extracted entities and relations
+    # Collect all raw nodes and edges instead of upserting to graph
+    all_raw_nodes = []
+    all_raw_edges = []
+
+    # From initial entity/relation extraction
     for m_nodes, m_edges in zip(entity_results, relation_results):
-        for k, v in m_nodes[0].items():
-            maybe_nodes[k].extend(v)
-        for k, v in m_edges[1].items():
-            # it's undirected graph
-            maybe_edges[tuple(sorted(k))].extend(v)
-    # clustered entities
+        for k, v_list in m_nodes[0].items():
+            all_raw_nodes.extend(v_list)
+        for k, v_list in m_edges[1].items():
+            # Ensure edges have consistent src_id and tgt_id format
+            src, tgt = tuple(sorted(k))
+            for edge_data in v_list:
+                edge_data['src_id'] = src
+                edge_data['tgt_id'] = tgt
+                all_raw_edges.append(edge_data)
+
+    # From hierarchical clustering summarization
     for cluster_layer in hierarchical_clustered_entities:
-        for item in cluster_layer:
-            maybe_nodes[item["entity_name"]].extend([item])
-    # clustered relations
+        all_raw_nodes.extend(cluster_layer)
     for cluster_layer in hierarchical_clustered_relations:
         for item in cluster_layer:
-            maybe_edges[tuple(sorted((item["src_id"], item["tgt_id"])))].extend([item])
-    # store the nodes
-    all_entities_data = await asyncio.gather(
-        *[
-            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-            for k, v in maybe_nodes.items()
-        ]
-    )
-    # store the edges
-    await asyncio.gather(
-        *[
-            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
-            for k, v in maybe_edges.items()
-        ]
-    )
-    if not len(all_entities_data):
-        logger.warning("Didn't extract any entities, maybe your LLM is not working")
-        return None
-    if entity_vdb is not None:
-        data_for_vdb = {  # key is the md5 hash of the entity name string
-            compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                "content": dp["entity_name"]
-                + dp[
-                    "description"
-                ],  # entity name and description construct the content
-                "entity_name": dp["entity_name"],
-            }
-            for dp in all_entities_data
-        }
-        await entity_vdb.upsert(data_for_vdb)
-    return knowledge_graph_inst
+            src, tgt = tuple(sorted((item["src_id"], item["tgt_id"])))
+            item['src_id'] = src
+            item['tgt_id'] = tgt
+            all_raw_edges.append(item)
+
+    logger.info(f"Extracted a total of {len(all_raw_nodes)} raw nodes and {len(all_raw_edges)} raw edges.")
+    
+    # Return the flat lists for disambiguation processing
+    return all_raw_nodes, all_raw_edges
 
 
 async def extract_entities(
