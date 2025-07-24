@@ -6,15 +6,17 @@ import threading
 import socketserver
 import http.server
 
+
 # Load GraphML file and transfer to JSON
 def graphml_to_json(graphml_file):
     G = nx.read_graphml(graphml_file)
     data = nx.node_link_data(G)
     return json.dumps(data)
 
+
 # Create HTML file with improved visualization
 def create_html(html_path):
-    html_content = '''
+    html_content = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -243,16 +245,20 @@ def create_html(html_path):
     </script>
 </body>
 </html>
-    '''
+    """
 
-    with open(html_path, 'w', encoding='utf-8') as f:
+    with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
+
 
 # Create JSON file
 def create_json(json_data, json_path):
-    json_data = "var graphJson = " + json_data.replace('\\"', '').replace("'", "\\'").replace("\n", "")
-    with open(json_path, 'w', encoding='utf-8') as f:
+    json_data = "var graphJson = " + json_data.replace('\\"', "").replace(
+        "'", "\\'"
+    ).replace("\n", "")
+    with open(json_path, "w", encoding="utf-8") as f:
         f.write(json_data)
+
 
 # Start simple HTTP server
 def start_server(port):
@@ -261,13 +267,14 @@ def start_server(port):
         print(f"Server started at http://localhost:{port}")
         httpd.serve_forever()
 
+
 # Main function
 def visualize_graphml(graphml_file, html_path, port=8000):
     json_data = graphml_to_json(graphml_file)
     html_dir = os.path.dirname(html_path)
     if not os.path.exists(html_dir):
         os.makedirs(html_dir)
-    json_path = os.path.join(html_dir, 'graph_json.js')
+    json_path = os.path.join(html_dir, "graph_json.js")
     create_json(json_data, json_path)
     create_html(html_path)
     # Start server in background
@@ -275,7 +282,7 @@ def visualize_graphml(graphml_file, html_path, port=8000):
     server_thread.daemon = True
     server_thread.start()
     # Open default browser
-    webbrowser.open(f'http://localhost:{port}/{os.path.basename(html_path)}')
+    webbrowser.open(f"http://localhost:{port}/{os.path.basename(html_path)}")
     print("Visualization is ready. Press Ctrl+C to exit.")
     try:
         # Keep main thread running
@@ -284,8 +291,9 @@ def visualize_graphml(graphml_file, html_path, port=8000):
     except KeyboardInterrupt:
         print("Shutting down...")
 
+
 # Usage
 if __name__ == "__main__":
-    graphml_file = r"./work_dir_base_small/graph_chunk_entity_relation.graphml"  # Replace with your GraphML file path
+    graphml_file = r"./your_work_dir/graph_chunk_entity_relation.graphml"  # Replace with your GraphML file path
     html_path = "./graph_visualization.html"
     visualize_graphml(graphml_file, html_path, 11236)
