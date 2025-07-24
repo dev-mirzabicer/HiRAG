@@ -14,9 +14,14 @@ from ._error_handling import (
     ErrorConfig, 
     HiRAGErrorHandler, 
     ErrorSeverity,
+    RetryStrategy,
+    RetryConfig,
     error_handler,
+    error_handling_context,
+    with_error_handling,
     get_error_handler,
-    set_error_handler
+    set_error_handler,
+    configure_llm_integration
 )
 
 from ._llm import (
@@ -216,6 +221,11 @@ class HiRAG:
             )
             
             logger.info("[INITIALIZATION] HiRAG initialized successfully")
+            
+            # Configure LLM integration for error handling
+            self.error_handler.set_llm_function(self.best_model_func)
+            self.error_handler.set_prompts(PROMPTS)
+            logger.info("[ERROR_HANDLING] LLM integration configured for error recovery")
             
         except Exception as e:
             self.error_handler.handle_operation_error(

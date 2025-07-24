@@ -191,13 +191,16 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
         entities: dict,
         layers: int = 50,
         max_length_in_cluster: int = 60000,
-        tokenizer=tiktoken.get_encoding("cl100k_base"),
+        tokenizer=None,
         reduction_dimension: int = 2,
         cluster_threshold: float = 0.1,
         verbose: bool = False,
         threshold: float = 0.98, # 0.99
         thredshold_change_rate: float = 0.05
     ) -> List[dict]:
+        if tokenizer is None:
+            tokenizer = tiktoken.get_encoding("cl100k_base")
+            
         use_llm_func: callable = global_config["best_model_func"]
         # Get the embeddings from the nodes
         nodes = list(entities.values())
