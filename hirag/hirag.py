@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Optional, Type, Union, cast
 
 import tiktoken
 
-from hirag._storage.gdb_neo4j import Neo4jStorage  # Import networkx for pathfinding
+from hirag._storage.gdb_neo4j import Neo4jStorage
 
 from ._llm import (
     gpt_4o_complete,
