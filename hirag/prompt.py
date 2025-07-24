@@ -535,7 +535,9 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 # --- Entity Disambiguation Prompt ---
 
-PROMPTS["entity_disambiguation"] = """You are a meticulous knowledge graph curator and an expert in Combinatory Logic. Your task is to perform entity disambiguation. You will be given a cluster of entities that are suspected to be aliases for the same underlying concept. Your job is to analyze the provided evidence and make a definitive judgment.
+PROMPTS[
+    "entity_disambiguation"
+] = """You are a meticulous knowledge graph curator and an expert in Combinatory Logic. Your task is to perform entity disambiguation. You will be given a cluster of entities that are suspected to be aliases for the same underlying concept. Your job is to analyze the provided evidence and make a definitive judgment.
 
 # Goal
 Determine if the entities in the provided list are aliases for one another. If they are, you must select the best canonical name. If they are not, you must state that they should not be merged.

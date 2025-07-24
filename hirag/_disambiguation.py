@@ -16,6 +16,7 @@ import asyncio
 import numpy as np
 from collections import defaultdict
 from typing import List, Dict, Tuple, Optional, Union
+from hirag.prompt import PROMPTS
 from thefuzz import fuzz
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -373,51 +374,8 @@ class EntityDisambiguator:
         Returns:
             Formatted prompt string for the LLM
         """
-        # Get the prompt template (will be added to prompts.py)
-        prompt_template = """You are a meticulous knowledge graph curator and an expert in Combinatory Logic. Your task is to perform entity disambiguation. You will be given a cluster of entities that are suspected to be aliases for the same underlying concept. Your job is to analyze the provided evidence and make a definitive judgment.
-
-# Goal
-Determine if the entities in the provided list are aliases for one another. If they are, you must select the best canonical name. If they are not, you must state that they should not be merged.
-
-# Rules of Judgment
-1. **Identity vs. Similarity**: Do not merge entities that are merely similar. Merge only if you are highly confident they refer to the exact same concept, postulate, or object. Subtle differences in definitions matter.
-2. **Context is Ground Truth**: The `original_text_context` is the most important piece of evidence. An entity's meaning is defined by its use in the source document. Your justification MUST reference specific phrases from this context.
-3. **Be Conservative**: If there is any ambiguity or insufficient evidence to prove the entities are identical, you MUST decide "DO_NOT_MERGE". It is better to leave two aliases separate than to incorrectly merge two distinct concepts.
-4. **Canonical Name Selection**: If you decide to merge, the canonical name should be the most precise and commonly used term. Prefer formal, shorter names (e.g., "CL_η") over descriptive, longer ones (e.g., "The theory CL_η").
-
-# Input Data
-You will be provided with a JSON list of candidate entities. Each entity object has the following structure:
-{{
-  "entity_name": "The name extracted for this entity.",
-  "entity_description": "The description generated for this entity.",
-  "original_text_context": "The full text chunk from which this entity was extracted."
-}}
-
-# Output Format
-You MUST respond with a single, well-formed JSON object with the following structure. Do not add any text outside of this JSON object.
-
-- For a MERGE decision:
-{{
-  "decision": "MERGE",
-  "canonical_name": "<The chosen canonical name>",
-  "aliases": ["<list of other names to be merged>"],
-  "confidence_score": <A float from 0.0 to 1.0 indicating your confidence in this decision>,
-  "justification": "A detailed explanation for why these entities are identical, referencing specific evidence from the provided context."
-}}
-
-- For a DO_NOT_MERGE decision:
-{{
-  "decision": "DO_NOT_MERGE",
-  "confidence_score": <A float from 0.0 to 1.0 indicating your confidence in this decision>,
-  "justification": "A detailed explanation of the subtle differences that prevent these entities from being merged, referencing specific evidence from the provided context."
-}}
-
-# Real Data
-
-Candidate Cluster:
-{input_json_for_cluster}
-
-# Your Decision:"""
+        # Get the prompt template
+        prompt_template = PROMPTS["entity_disambiguation"]
 
         # Convert cluster data to JSON string
         import json
@@ -591,7 +549,15 @@ Candidate Cluster:
         # Replicate the strict 'is_temporary' logic from _op.py
         # An entity is only considered non-temporary if >90% of its mentions are non-temporary.
         is_temporary_true_count = sum(1 for val in is_temporary_values if val)
-        final_is_temporary = (is_temporary_true_count / len(is_temporary_values)) <= 0.1
+
+        # An entity is considered temporary if 90% or more of its instances are temporary.
+        # This is a strict threshold to avoid incorrectly marking foundational concepts as temporary.
+        if not is_temporary_values:
+            final_is_temporary = False  # Default to non-temporary if no data
+        else:
+            final_is_temporary = (
+                is_temporary_true_count / len(is_temporary_values)
+            ) >= 0.9
 
         # Create the final merged entity dictionary
         merged_entity = {
