@@ -33,7 +33,7 @@ If the variable is *highly* temporary, so much so that it is useless outside its
 
 1.  **Factual Information ONLY**: You must extract *only* factual information pertaining to Combinatory Logic.
     *   **DO extract**: Definitions, formal statements, theorems, properties, specific combinators, systems, rules, and their descriptions.
-    *   **DO NOT extract**: Editorial comments, narrative transitions, author's opinions, historical anecdotes (unless the historical fact itself is a core CL concept, e.g., "Curry's paradox"), section introductions/conclusions, or any text that describes the *structure* of the document rather than the *content* of CL.
+    *   **DO NOT extract**: Exercises, examples, editorial comments, narrative transitions, author's opinions, historical anecdotes (unless the historical fact itself is a core CL concept, e.g., "Curry's paradox"), section introductions/conclusions, or any text that describes the *structure* of the document rather than the *content* of CL.
     *   **Example**: `\(CL_\\xi \equiv CL_\ext \cup CL_M\)` (extract). "The previous section inspected extensional equality while this section will inspect the equivalence of..." (DO NOT extract).
 
 2.  **Proof Handling (Atomic Units)**:
