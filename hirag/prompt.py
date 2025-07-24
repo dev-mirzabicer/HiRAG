@@ -26,14 +26,14 @@ You must determine if an entity is 'temporary' based on its scope and generality
 - **is_temporary: false**: Set this to `false` if the entity represents a foundational, permanent, or reusable concept within the broader field. This doesn't mean that the entity should be a well-known entity in the field. The criteria is simply that it is *valid* outside the context, even if it is niche.
     - **Examples**: "Church-Rosser Theorem", "S combinator", "beta-reduction", "extensional equality", "abstraction algorithm", "gödel number", "right-congruence", "CL_ext".
 
-If there isn't enough context for you to definitively determine that an entity is temporary, you must set is_temporary to false.
+If there isn't enough context for you to definitively determine that an entity is temporary, you must set is_temporary to false to avoid false-positives.
 If the variable is *highly* temporary, so much so that it is useless outside its *page*, then you should exclude it altogether, without extracting it at all.
 
 # Strict Extraction Rules (CRUCIAL)
 
 1.  **Factual Information ONLY**: You must extract *only* factual information pertaining to Combinatory Logic.
     *   **DO extract**: Definitions, formal statements, theorems, properties, specific combinators, systems, rules, and their descriptions.
-    *   **DO NOT extract**: Editorial comments, narrative transitions, author's opinions, historical anecdotes (unless the historical fact itself is a core CL concept, e.g., "Curry's paradox"), section introductions/conclusions, or any text that describes the *structure* of the document rather than the *content* of CL.
+    *   **DO NOT extract**: Exercises, examples, editorial comments, narrative transitions, author's opinions, historical anecdotes (unless the historical fact itself is a core CL concept, e.g., "Curry's paradox"), section introductions/conclusions, or any text that describes the *structure* of the document rather than the *content* of CL.
     *   **Example**: `\(CL_\\xi \equiv CL_\ext \cup CL_M\)` (extract). "The previous section inspected extensional equality while this section will inspect the equivalence of..." (DO NOT extract).
 
 2.  **Proof Handling (Atomic Units)**:
