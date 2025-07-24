@@ -17,6 +17,7 @@ from .base import (
     BaseVectorStorage
 )
 from ._utils import split_string_by_multi_markers, clean_str, is_float_regex
+from ._validation import validate
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 
 # Initialize logging
@@ -136,7 +137,7 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    if not validate("record_attributes_for_entity_clustering", record_attributes):
         return None
     # add this record as a node in the G
     entity_name = clean_str(record_attributes[1].upper())
@@ -157,7 +158,7 @@ async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
+    if not validate("record_attributes_for_relationship_clustering", record_attributes):
         return None
     # add this record as edge
     source = clean_str(record_attributes[1].upper())
