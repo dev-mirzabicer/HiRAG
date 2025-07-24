@@ -21,6 +21,7 @@ from ._utils import (
     split_string_by_multi_markers,
     truncate_list_by_token_size,
 )
+from ._validation import validate
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -170,7 +171,7 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
 ):
     # The tuple now has 5 elements: ("entity", name, type, desc, is_temporary)
-    if len(record_attributes) < 5 or record_attributes[0] != '"entity"':
+    if not validate("record_attributes_for_entity", record_attributes):
         return None
 
     entity_name = clean_str(record_attributes[1].upper())
@@ -199,7 +200,7 @@ async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
+    if not validate("record_attributes_for_relationship", record_attributes):
         return None
     # add this record as edge
     source = clean_str(record_attributes[1].upper())
