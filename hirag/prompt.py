@@ -1,4 +1,30 @@
-GRAPH_FIELD_SEP = "<SEP>"
+from .config import get_quality_control_config
+
+# Get configuration values for prompt constants
+def get_prompt_constants():
+    """Get prompt constants from centralized configuration"""
+    config = get_quality_control_config()
+    return {
+        'graph_field_sep': config.graph_field_sep,
+        'record_delimiter': config.record_delimiter,
+        'record_sep': config.record_sep,
+        'complete_delimiter': config.complete_delimiter
+    }
+
+# Use configuration or fallback to original values for backward compatibility
+try:
+    _constants = get_prompt_constants()
+    GRAPH_FIELD_SEP = _constants['graph_field_sep']
+    RECORD_DELIMITER = _constants['record_delimiter']  
+    RECORD_SEP = _constants['record_sep']
+    COMPLETE_DELIMITER = _constants['complete_delimiter']
+except:
+    # Fallback to original hardcoded values
+    GRAPH_FIELD_SEP = "<SEP>"
+    RECORD_DELIMITER = "<|>"
+    RECORD_SEP = "<|RECORD|>"
+    COMPLETE_DELIMITER = "<|COMPLETE|>"
+
 PROMPTS = {}
 
 # --- Core Entity and Relationship Extraction Prompts ---
@@ -529,9 +555,9 @@ PROMPTS["META_ENTITY_TYPES"] = [
     "property",  # a characteristic or attribute of an object or concept
 ]
 
-PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
-PROMPTS["DEFAULT_RECORD_DELIMITER"] = "<|RECORD|>"
-PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
+PROMPTS["DEFAULT_TUPLE_DELIMITER"] = RECORD_DELIMITER
+PROMPTS["DEFAULT_RECORD_DELIMITER"] = RECORD_SEP
+PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = COMPLETE_DELIMITER
 
 # --- Entity Disambiguation Prompt ---
 PROMPTS["entity_disambiguation"] = """

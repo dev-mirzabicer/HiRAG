@@ -1,0 +1,272 @@
+# HiRAG Centralized Configuration File
+# This file contains all configuration parameters for the HiRAG system,
+# consolidating settings that were previously scattered across the codebase.
+#
+# Configuration Structure:
+# - api: API credentials and model settings for different providers
+# - text_processing: Text chunking and processing parameters
+# - entity_processing: Entity extraction and disambiguation settings
+# - graph_operations: Graph construction and clustering parameters
+# - performance: Concurrency and performance tuning
+# - quality_control: Quality thresholds and validation settings
+# - system_behavior: System-wide behavior and infrastructure settings
+
+# =============================================================================
+# API Configuration
+# =============================================================================
+api:
+  openai:
+    api_key: "***"  # Set via environment variable OPENAI_API_KEY
+    base_url: "***"  # Optional: custom OpenAI base URL
+    model: "gpt-4o"
+    embedding_model: "text-embedding-ada-002"
+    embedding_dim: 1536
+
+  glm:
+    api_key: "***"  # Set via environment variable GLM_API_KEY
+    base_url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4-plus"
+    embedding_model: "embedding-3"
+    embedding_dim: 2048
+
+  deepseek:
+    api_key: "***"  # Set via environment variable DEEPSEEK_API_KEY
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
+
+  google:
+    api_key: "***"  # Set via environment variable GOOGLE_API_KEY
+    model: "gemini-2.5-pro"
+    embedding_model: "gemini-embedding-exp-03-07"
+    embedding_dim: 3072
+
+# =============================================================================
+# Text Processing Configuration
+# =============================================================================
+text_processing:
+  # Chunking parameters
+  chunk_token_size: 1200
+  chunk_overlap_token_size: 100
+  tiktoken_model_name: "gpt-4o"
+  max_token_size: 8192
+  overlap_token_size: 128
+  encoding_num_threads: 16
+
+# =============================================================================
+# Entity Processing Configuration
+# =============================================================================
+entity_processing:
+  # Basic entity extraction settings
+  extract_max_gleaning: 1
+  summary_to_max_tokens: 500
+  max_length_in_cluster: 60000
+
+  # Entity Disambiguation & Merging (EDM) settings
+  enable_disambiguation: true
+  lexical_similarity_threshold: 0.85
+  semantic_similarity_threshold: 0.88
+  max_cluster_size: 6
+  max_context_tokens: 4000
+  min_merge_confidence: 0.8
+  vector_search_top_k: 50
+  memory_batch_size: 1000
+
+  # EDM performance settings
+  embedding_batch_size: 32
+  max_concurrent_llm_calls: 3
+  max_llm_retries: 3
+  retry_delay_base: 1.0
+  retry_delay_max: 30.0
+
+# =============================================================================
+# Graph Operations Configuration
+# =============================================================================
+graph_operations:
+  # Clustering algorithms and parameters
+  cluster_algorithm: "leiden"
+  max_cluster_size: 10
+  cluster_seed: 3735928559  # 0xDEADBEEF in decimal
+  node_embedding_algorithm: "node2vec"
+
+  # Node2Vec parameters
+  node2vec_dimensions: 1536
+  node2vec_num_walks: 10
+  node2vec_walk_length: 40
+  node2vec_window_size: 2
+  node2vec_iterations: 3
+  node2vec_random_seed: 3
+
+  # Hierarchical clustering parameters
+  random_seed: 224
+  umap_n_neighbors: 15
+  umap_metric: "cosine"
+  max_clusters: 50
+  gmm_n_init: 5
+  hierarchical_layers: 50
+  reduction_dimension: 2
+  cluster_threshold: 0.1
+  similarity_threshold: 0.98
+
+  # Neo4j specific settings
+  neo4j_max_hops: 10
+  neo4j_weight_property: "weight"
+  neo4j_default_algorithm: "cypher_shortest"
+
+  # Vector database settings
+  cosine_better_than_threshold: 0.2
+
+# =============================================================================
+# Performance Configuration
+# =============================================================================
+performance:
+  # Embedding performance settings
+  embedding_batch_num: 32
+  embedding_func_max_async: 8
+  embeddings_batch_size: 64
+
+  # Model concurrency settings
+  best_model_max_token_size: 32768
+  best_model_max_async: 8
+  cheap_model_max_token_size: 32768
+  cheap_model_max_async: 8
+
+  # Community report settings
+  community_report_max_token_size: 12000
+
+  # Rate limiting defaults
+  requests_per_minute: 60
+  requests_per_hour: 3600
+  tokens_per_minute: 150000
+  concurrent_requests: 10
+  backpressure_threshold: 0.8
+
+# =============================================================================
+# Quality Control Configuration
+# =============================================================================
+quality_control:
+  # Quality thresholds
+  query_better_than_threshold: 0.2
+
+  # Prompt formatting constants
+  graph_field_sep: "<SEP>"
+  record_delimiter: "<|>"
+  record_sep: "<|RECORD|>"
+  complete_delimiter: "<|COMPLETE|>"
+
+# =============================================================================
+# System Behavior Configuration
+# =============================================================================
+system_behavior:
+  # Basic system settings
+  working_dir: "./hirag_cache"
+  enable_local: true
+  enable_naive_rag: false
+  enable_hierarchical_mode: true
+  enable_llm_cache: true
+  always_create_working_dir: true
+  enable_entity_names_vdb: true
+
+  # Advanced infrastructure systems
+  enable_token_estimation: true
+  enable_checkpointing: true
+  enable_retry_management: true
+  enable_rate_limiting: true
+  enable_progress_tracking: true
+  enable_estimation_learning: true
+
+  # Checkpointing system
+  checkpoint_auto_interval: 30.0  # seconds
+  checkpoint_max_history: 10
+
+  # Retry management
+  retry_default_max_attempts: 3
+  retry_default_initial_delay: 1.0
+  retry_default_max_delay: 60.0
+  retry_enable_circuit_breaker: true
+
+  # Rate limiting
+  rate_limiting_adaptive_adjustment: true
+  rate_limiting_conservative_mode: false
+
+  # Progress tracking and dashboard
+  progress_dashboard_type: "terminal"  # Options: "terminal", "web", "console_log"
+  progress_update_interval: 1.0
+  progress_enable_web_dashboard: false
+  progress_web_port: 8080
+
+  # Estimation database for learning
+  estimation_db_max_records: 10000
+  estimation_db_cleanup_days: 90
+
+# =============================================================================
+# Legacy Compatibility Section
+# =============================================================================
+# This section maintains compatibility with the existing config.yaml format
+# and will be automatically mapped to the new structure above.
+
+# Legacy OpenAI Configuration (mapped to api.openai)
+openai:
+  embedding_model: "text-embedding-ada-002"
+  model: "gpt-4o"
+  api_key: "***"
+  base_url: "***"
+
+# Legacy GLM Configuration (mapped to api.glm)
+glm:
+  model: "glm-4-plus"
+  api_key: "***"
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  embedding_model: "embedding-3"
+
+# Legacy Deepseek Configuration (mapped to api.deepseek)
+deepseek:
+  model: "deepseek-chat"
+  api_key: "***"
+  base_url: "https://api.deepseek.com"
+
+# Legacy Google Configuration (mapped to api.google)
+google:
+  model: "gemini-2.5-pro"
+  api_key: "***"
+  embedding_model: "gemini-embedding-exp-03-07"
+
+# Legacy Model Parameters (mapped to various sections)
+model_params:
+  openai_embedding_dim: 1536
+  glm_embedding_dim: 2048
+  google_embedding_dim: 3072
+  max_token_size: 8192
+
+# Legacy HiRAG Configuration (mapped to system_behavior and performance)
+hirag:
+  working_dir: "./hirag_cache"
+  enable_llm_cache: true
+  enable_hierachical_mode: true
+  embedding_batch_num: 32
+  embedding_func_max_async: 8
+  enable_naive_rag: false
+
+# =============================================================================
+# Environment Variable Overrides
+# =============================================================================
+# The following environment variables can override configuration values:
+#
+# API Keys:
+#   OPENAI_API_KEY         -> api.openai.api_key
+#   GLM_API_KEY           -> api.glm.api_key
+#   DEEPSEEK_API_KEY      -> api.deepseek.api_key
+#   GOOGLE_API_KEY        -> api.google.api_key
+#   OPENAI_BASE_URL       -> api.openai.base_url
+#
+# System Settings:
+#   HIRAG_WORKING_DIR     -> system_behavior.working_dir
+#   HIRAG_ENABLE_CACHE    -> system_behavior.enable_llm_cache
+#   HIRAG_ENABLE_HIERARCHICAL -> system_behavior.enable_hierarchical_mode
+#
+# Performance Settings:
+#   HIRAG_EMBEDDING_BATCH_SIZE -> performance.embedding_batch_num
+#   HIRAG_MAX_ASYNC       -> performance.embedding_func_max_async
+#
+# Text Processing:
+#   HIRAG_CHUNK_SIZE      -> text_processing.chunk_token_size
+#   HIRAG_CHUNK_OVERLAP   -> text_processing.chunk_overlap_token_size

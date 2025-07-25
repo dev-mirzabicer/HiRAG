@@ -11,6 +11,12 @@ import tiktoken
 
 from hirag._storage.gdb_neo4j import Neo4jStorage
 from ._disambiguation import EntityDisambiguator, DisambiguationConfig
+from .config import (
+    get_config_manager, 
+    get_config,
+    HiRAGConfig,
+    ConfigManager
+)
 
 from ._llm import (
     gpt_4o_complete,
@@ -67,6 +73,16 @@ from ._estimation_db import EstimationDatabase, create_estimation_database
 
 @dataclass
 class HiRAG:
+    """
+    HiRAG: A Hierarchical Retrieval-Augmented Generation system with centralized configuration.
+    
+    This class can be initialized in two ways:
+    1. Traditional way: HiRAG(param1=value1, param2=value2, ...)
+    2. From centralized config: HiRAG.from_config() or HiRAG.from_config_file("path/to/config.yaml")
+    
+    The centralized configuration system provides better organization, validation,
+    and environment variable support.
+    """
     # --- Configuration fields remain the same ---
     working_dir: str = field(
         default_factory=lambda: f"./hirag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
@@ -177,6 +193,51 @@ class HiRAG:
     enable_estimation_learning: bool = True
     estimation_db_max_records: int = 10000
     estimation_db_cleanup_days: int = 90
+
+    @classmethod
+    def from_config(cls, config_file: Optional[str] = None) -> "HiRAG":
+        """
+        Create a HiRAG instance from the centralized configuration system.
+        
+        Args:
+            config_file: Optional path to configuration file. If None, will look for
+                        configuration files in standard locations.
+                        
+        Returns:
+            HiRAG: A new HiRAG instance with settings from the configuration system.
+        """
+        config_manager = ConfigManager(config_file)
+        return cls.from_config_manager(config_manager)
+    
+    @classmethod
+    def from_config_manager(cls, config_manager: ConfigManager) -> "HiRAG":
+        """
+        Create a HiRAG instance from a ConfigManager instance.
+        
+        Args:
+            config_manager: The configuration manager containing the settings.
+            
+        Returns:
+            HiRAG: A new HiRAG instance with settings from the configuration manager.
+        """
+        # Get the legacy configuration dictionary for backward compatibility
+        legacy_config = config_manager.get_legacy_config_dict()
+        
+        # Create HiRAG instance with configuration values
+        return cls(**legacy_config)
+    
+    @classmethod
+    def from_config_dict(cls, config_dict: Dict[str, Any]) -> "HiRAG":
+        """
+        Create a HiRAG instance from a configuration dictionary.
+        
+        Args:
+            config_dict: Dictionary containing configuration values.
+            
+        Returns:
+            HiRAG: A new HiRAG instance with the provided configuration.
+        """
+        return cls(**config_dict)
 
     def __post_init__(self):
         # --- __post_init__ logic remains largely the same ---
