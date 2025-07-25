@@ -5,6 +5,7 @@ import time
 import argparse
 import numpy as np
 import networkx as nx
+
 sys.path.append("../")
 from hirag import HiRAG, QueryParam
 from openai import AsyncOpenAI, OpenAI
@@ -29,6 +30,7 @@ class EmbeddingFunc:
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
 
+
 def wrap_embedding_func_with_attrs(**kwargs):
     """Wrap a function with attributes"""
 
@@ -38,13 +40,13 @@ def wrap_embedding_func_with_attrs(**kwargs):
 
     return final_decro
 
+
 @wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=8192)
 async def GLM_embedding(texts: list[str]) -> np.ndarray:
     model_name = "embedding-3"
     client = OpenAI(
-        api_key=GLM_API_KEY,
-        base_url="https://open.bigmodel.cn/api/paas/v4/"
-    ) 
+        api_key=GLM_API_KEY, base_url="https://open.bigmodel.cn/api/paas/v4/"
+    )
     embedding = client.embeddings.create(
         input=texts,
         model=model_name,
@@ -86,6 +88,7 @@ async def deepseepk_model_if_cache(
     # -----------------------------------------------------
     return response.choices[0].message.content
 
+
 DATASET = "legal"
 
 graph_func = HiRAG(
@@ -94,9 +97,10 @@ graph_func = HiRAG(
     embedding_func=GLM_embedding,
     best_model_func=deepseepk_model_if_cache,
     cheap_model_func=deepseepk_model_if_cache,
-    enable_hierachical_mode=True, 
+    enable_hierarchical_mode=True,
     embedding_func_max_async=16,
-    enable_naive_rag=True)
+    enable_naive_rag=True,
+)
 
 nx_graph = graph_func.chunk_entity_relation_graph._graph
 num_nodes = nx_graph.number_of_nodes()

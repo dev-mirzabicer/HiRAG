@@ -10,13 +10,14 @@ from hirag._utils import compute_args_hash
 from tqdm import tqdm
 
 # Load configuration from YAML file
-with open('config.yaml', 'r') as file:
+with open("config.yaml", "r") as file:
     config = yaml.safe_load(file)
 
 # Extract configurations
-GLM_API_KEY = config['glm']['api_key']
-MODEL = config['glm']['model']
-GLM_URL = config['glm']['base_url']
+GLM_API_KEY = config["glm"]["api_key"]
+MODEL = config["glm"]["model"]
+GLM_URL = config["glm"]["base_url"]
+
 
 @dataclass
 class EmbeddingFunc:
@@ -27,6 +28,7 @@ class EmbeddingFunc:
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
 
+
 def wrap_embedding_func_with_attrs(**kwargs):
     """Wrap a function with attributes"""
 
@@ -36,13 +38,14 @@ def wrap_embedding_func_with_attrs(**kwargs):
 
     return final_decro
 
-@wrap_embedding_func_with_attrs(embedding_dim=config['model_params']['glm_embedding_dim'], max_token_size=config['model_params']['max_token_size'])
+
+@wrap_embedding_func_with_attrs(
+    embedding_dim=config["model_params"]["glm_embedding_dim"],
+    max_token_size=config["model_params"]["max_token_size"],
+)
 async def GLM_embedding(texts: list[str]) -> np.ndarray:
-    model_name = config['glm']['embedding_model']
-    client = OpenAI(
-        api_key=GLM_API_KEY,
-        base_url=GLM_URL
-    ) 
+    model_name = config["glm"]["embedding_model"]
+    client = OpenAI(api_key=GLM_API_KEY, base_url=GLM_URL)
     embedding = client.embeddings.create(
         input=texts,
         model=model_name,
@@ -51,13 +54,10 @@ async def GLM_embedding(texts: list[str]) -> np.ndarray:
     return np.array(final_embedding)
 
 
-
 async def glm_model_if_cache(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
-    openai_async_client = AsyncOpenAI(
-        api_key=GLM_API_KEY, base_url=GLM_URL
-    )
+    openai_async_client = AsyncOpenAI(api_key=GLM_API_KEY, base_url=GLM_URL)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -90,18 +90,23 @@ async def glm_model_if_cache(
 
 
 graph_func = HiRAG(
-    working_dir=config['hirag']['working_dir'],
-    enable_llm_cache=config['hirag']['enable_llm_cache'],
+    working_dir=config["hirag"]["working_dir"],
+    enable_llm_cache=config["hirag"]["enable_llm_cache"],
     embedding_func=GLM_embedding,
     best_model_func=glm_model_if_cache,
     cheap_model_func=glm_model_if_cache,
-    enable_hierachical_mode=config['hirag']['enable_hierachical_mode'], 
-    embedding_func_max_async=config['hirag']['embedding_func_max_async'],
-    enable_naive_rag=config['hirag']['enable_naive_rag'])
+    enable_hierarchical_mode=config["hirag"]["enable_hierarchical_mode"],
+    embedding_func_max_async=config["hirag"]["embedding_func_max_async"],
+    enable_naive_rag=config["hirag"]["enable_naive_rag"],
+)
 
 # comment this if the working directory has already been indexed
 with open("your .txt file path") as f:
     graph_func.insert(f.read())
 
 print("Perform hi search:")
-print(graph_func.query("What are the top themes in this story?", param=QueryParam(mode="hi")))
+print(
+    graph_func.query(
+        "What are the top themes in this story?", param=QueryParam(mode="hi")
+    )
+)

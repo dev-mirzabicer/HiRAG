@@ -133,7 +133,7 @@ class TokenEstimator:
 
         # Default estimates for variable content (all learnable parameters)
         self._default_estimates = self._initialize_default_estimates()
-        
+
         # Dynamic estimation parameters (learnable loop counts, ratios, etc.)
         self._dynamic_params = self._initialize_dynamic_parameters()
 
@@ -215,7 +215,6 @@ class TokenEstimator:
                 "min_entities_per_chunk": 1,
                 "max_entities_per_chunk": 15,
             },
-            
             # Gleaning loop dynamics
             "gleaning_loops": {
                 "avg_actual_loops": 0.7,  # Most chunks don't need full gleaning
@@ -223,7 +222,6 @@ class TokenEstimator:
                 "min_loop_probability": 0.1,
                 "chunk_size_loop_factor": 1.0,  # Larger chunks more likely to need loops
             },
-            
             # Hierarchical clustering dynamics
             "hierarchical_clustering": {
                 "clustering_iterations_base": 3.0,  # Base number of iterations
@@ -232,7 +230,6 @@ class TokenEstimator:
                 "min_entities_for_clustering": 10,
                 "max_clustering_iterations": 5,
             },
-            
             # Entity disambiguation dynamics
             "entity_disambiguation": {
                 "disambiguation_probability": 0.12,  # 12% of entities need disambiguation
@@ -241,7 +238,6 @@ class TokenEstimator:
                 "min_disambiguation_clusters": 0,
                 "max_disambiguation_cluster_size": 6,
             },
-            
             # Community detection dynamics
             "community_detection": {
                 "entities_per_community": 8.0,  # Average entities per community
@@ -250,14 +246,13 @@ class TokenEstimator:
                 "max_community_size": 25,
                 "community_overlap_ratio": 0.15,  # Some entities appear in multiple communities
             },
-            
             # General pipeline dynamics
             "pipeline": {
                 "relation_to_entity_ratio": 0.6,  # Relations per entity
                 "temporary_entity_ratio": 0.15,  # Percentage of temporary entities
                 "entity_merging_ratio": 0.08,  # Percentage of entities that get merged
                 "content_complexity_multiplier": 1.0,  # Global complexity adjustment
-            }
+            },
         }
 
     def count_tokens(self, text: str) -> int:
@@ -615,25 +610,33 @@ class TokenEstimator:
         chunk_estimates = self._estimate_chunk_processing_dynamic(
             num_chunks=num_chunks,
             token_per_chunk=token_per_chunk,
-            enable_hierarchical=config.get("enable_hierachical_mode", True),
-            max_gleaning_iterations=config.get("entity_extract_max_gleaning", 1)
+            enable_hierarchical=config.get("enable_hierarchical_mode", True),
+            max_gleaning_iterations=config.get("entity_extract_max_gleaning", 1),
         )
         all_estimates.extend(chunk_estimates)
 
         # 2. Hierarchical clustering
-        if config.get("enable_hierachical_mode", True):
-            estimated_entities = self._estimate_entity_count(num_chunks, token_per_chunk)
-            clustering_estimates = self._estimate_hierarchical_clustering_dynamic(estimated_entities)
+        if config.get("enable_hierarchical_mode", True):
+            estimated_entities = self._estimate_entity_count(
+                num_chunks, token_per_chunk
+            )
+            clustering_estimates = self._estimate_hierarchical_clustering_dynamic(
+                estimated_entities
+            )
             all_estimates.extend(clustering_estimates)
 
         # 3. Entity disambiguation
         if config.get("enable_entity_disambiguation", True):
-            disambiguation_estimates = self._estimate_disambiguation_dynamic(estimated_entities)
+            disambiguation_estimates = self._estimate_disambiguation_dynamic(
+                estimated_entities
+            )
             all_estimates.extend(disambiguation_estimates)
 
         # 4. Community reports
         estimated_communities = self._estimate_community_count(estimated_entities)
-        community_estimates = self._estimate_community_reports_dynamic(estimated_communities, estimated_entities)
+        community_estimates = self._estimate_community_reports_dynamic(
+            estimated_communities, estimated_entities
+        )
         all_estimates.extend(community_estimates)
 
         # Calculate cost estimates
@@ -650,8 +653,12 @@ class TokenEstimator:
                 "model_name": model_name,
                 "estimated_entities": estimated_entities,
                 "estimated_communities": estimated_communities,
-                "estimated_gleaning_loops": self._estimate_total_gleaning_loops(num_chunks),
-                "estimated_clustering_iterations": self._estimate_clustering_iterations(estimated_entities),
+                "estimated_gleaning_loops": self._estimate_total_gleaning_loops(
+                    num_chunks
+                ),
+                "estimated_clustering_iterations": self._estimate_clustering_iterations(
+                    estimated_entities
+                ),
                 "config_snapshot": config,
             },
         )
@@ -844,147 +851,163 @@ class TokenEstimator:
         return "\n".join(report_lines)
 
     # Dynamic estimation helper methods
-    
+
     def _estimate_entity_count(self, num_chunks: int, token_per_chunk: float) -> int:
         """Estimate total entities using dynamic parameters"""
         entity_params = self._dynamic_params["entity_extraction"]
-        
+
         base_entities = num_chunks * entity_params["entities_per_chunk_base"]
-        token_based_entities = (token_per_chunk / 100) * entity_params["entities_per_100_tokens"] * num_chunks
-        
+        token_based_entities = (
+            (token_per_chunk / 100)
+            * entity_params["entities_per_100_tokens"]
+            * num_chunks
+        )
+
         total_entities = base_entities + token_based_entities
         total_entities *= entity_params["chunk_complexity_factor"]
-        
+
         return max(
             entity_params["min_entities_per_chunk"] * num_chunks,
-            min(int(total_entities), entity_params["max_entities_per_chunk"] * num_chunks)
+            min(
+                int(total_entities),
+                entity_params["max_entities_per_chunk"] * num_chunks,
+            ),
         )
-    
+
     def _estimate_total_gleaning_loops(self, num_chunks: int) -> float:
         """Estimate total gleaning loops across all chunks"""
         gleaning_params = self._dynamic_params["gleaning_loops"]
         return num_chunks * gleaning_params["avg_actual_loops"]
-    
+
     def _estimate_clustering_iterations(self, num_entities: int) -> int:
         """Estimate hierarchical clustering iterations"""
         clustering_params = self._dynamic_params["hierarchical_clustering"]
-        
+
         if num_entities < clustering_params["min_entities_for_clustering"]:
             return 0
-        
+
         iterations = int(clustering_params["clustering_iterations_base"])
         return min(iterations, clustering_params["max_clustering_iterations"])
-    
+
     def _estimate_community_count(self, num_entities: int) -> int:
         """Estimate number of communities"""
         community_params = self._dynamic_params["community_detection"]
-        
-        estimated_communities = num_entities / community_params["entities_per_community"]
+
+        estimated_communities = (
+            num_entities / community_params["entities_per_community"]
+        )
         # Account for overlap
-        estimated_communities *= (1 - community_params["community_overlap_ratio"])
-        
+        estimated_communities *= 1 - community_params["community_overlap_ratio"]
+
         return max(1, int(estimated_communities))
-    
+
     def _estimate_chunk_processing_dynamic(
         self,
         num_chunks: int,
         token_per_chunk: float,
         enable_hierarchical: bool = True,
-        max_gleaning_iterations: int = 1
+        max_gleaning_iterations: int = 1,
     ) -> List[TokenEstimate]:
         """Optimized chunk processing estimation without mock chunks"""
         estimates = []
-        
+
         # Entity extraction for all chunks
         entity_estimate = self._estimate_entity_extraction("", int(token_per_chunk))
         for _ in range(num_chunks):
             estimates.append(entity_estimate)
-        
+
         # Relation extraction (if hierarchical mode)
         if enable_hierarchical:
-            relation_estimate = self._estimate_relation_extraction("", int(token_per_chunk))
+            relation_estimate = self._estimate_relation_extraction(
+                "", int(token_per_chunk)
+            )
             for _ in range(num_chunks):
                 estimates.append(relation_estimate)
-        
+
         # Dynamic gleaning estimation
         gleaning_params = self._dynamic_params["gleaning_loops"]
         actual_gleaning_loops = int(num_chunks * gleaning_params["avg_actual_loops"])
-        
+
         continue_estimate = self._estimate_continue_extraction("", int(token_per_chunk))
         loop_estimate = self._estimate_loop_detection("", int(token_per_chunk))
-        
+
         for _ in range(actual_gleaning_loops):
             estimates.append(continue_estimate)
             estimates.append(loop_estimate)
-        
+
         return estimates
-    
-    def _estimate_hierarchical_clustering_dynamic(self, num_entities: int) -> List[TokenEstimate]:
+
+    def _estimate_hierarchical_clustering_dynamic(
+        self, num_entities: int
+    ) -> List[TokenEstimate]:
         """Dynamic hierarchical clustering estimation"""
         clustering_params = self._dynamic_params["hierarchical_clustering"]
-        
+
         if num_entities < clustering_params["min_entities_for_clustering"]:
             return []
-        
+
         estimates = []
         current_entities = num_entities
         iterations = 0
-        
-        while (current_entities > clustering_params["entities_per_cluster"] and 
-               iterations < clustering_params["max_clustering_iterations"]):
-            
+
+        while (
+            current_entities > clustering_params["entities_per_cluster"]
+            and iterations < clustering_params["max_clustering_iterations"]
+        ):
             estimate = self._estimate_single_clustering_iteration(current_entities)
             estimates.append(estimate)
-            
+
             # Reduce entities for next iteration
-            current_entities = int(current_entities * clustering_params["cluster_reduction_ratio"])
+            current_entities = int(
+                current_entities * clustering_params["cluster_reduction_ratio"]
+            )
             iterations += 1
-        
+
         return estimates
-    
-    def _estimate_disambiguation_dynamic(self, num_entities: int) -> List[TokenEstimate]:
+
+    def _estimate_disambiguation_dynamic(
+        self, num_entities: int
+    ) -> List[TokenEstimate]:
         """Dynamic entity disambiguation estimation"""
         disambig_params = self._dynamic_params["entity_disambiguation"]
-        
+
         entities_needing_disambiguation = int(
             num_entities * disambig_params["disambiguation_probability"]
         )
-        
+
         if entities_needing_disambiguation == 0:
             return []
-        
+
         # Group entities into clusters
         avg_cluster_size = disambig_params["avg_cluster_size"]
         num_clusters = max(1, int(entities_needing_disambiguation / avg_cluster_size))
-        
+
         estimates = []
         for _ in range(num_clusters):
             estimate = self._estimate_single_disambiguation(int(avg_cluster_size))
             estimates.append(estimate)
-        
+
         return estimates
-    
+
     def _estimate_community_reports_dynamic(
-        self, 
-        num_communities: int, 
-        num_entities: int
+        self, num_communities: int, num_entities: int
     ) -> List[TokenEstimate]:
         """Dynamic community report estimation"""
         community_params = self._dynamic_params["community_detection"]
-        
+
         estimates = []
         avg_community_size = int(num_entities / max(1, num_communities))
-        
+
         # Ensure community size is within bounds
         avg_community_size = max(
             community_params["min_community_size"],
-            min(avg_community_size, community_params["max_community_size"])
+            min(avg_community_size, community_params["max_community_size"]),
         )
-        
+
         for _ in range(num_communities):
             estimate = self._estimate_single_community_report(avg_community_size)
             estimates.append(estimate)
-        
+
         return estimates
 
 

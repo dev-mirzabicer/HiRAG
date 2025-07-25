@@ -21,7 +21,7 @@ You can just utilize the following code to perform a query with HiRAG.
 graph_func = HiRAG(
     working_dir="./your_work_dir",
     enable_llm_cache=True,
-    enable_hierachical_mode=True, 
+    enable_hierarchical_mode=True, 
     embedding_batch_num=6,
     embedding_func_max_async=8, # according to your machine
     enable_naive_rag=True

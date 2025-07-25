@@ -128,7 +128,7 @@ graph_func = HiRAG(
     embedding_func=google_embedding,
     best_model_func=google_model_if_cache,
     cheap_model_func=google_model_if_cache,
-    enable_hierachical_mode=config["hirag"]["enable_hierachical_mode"],
+    enable_hierarchical_mode=config["hirag"]["enable_hierarchical_mode"],
     embedding_func_max_async=config["hirag"]["embedding_func_max_async"],
     enable_naive_rag=config["hirag"]["enable_naive_rag"],
 )

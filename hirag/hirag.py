@@ -64,10 +64,18 @@ from .prompt import PROMPTS  # Import the new prompts
 
 # Import new infrastructure systems
 from ._token_estimation import TokenEstimator, create_token_estimator, LLMCallType
-from ._checkpointing import CheckpointManager, create_checkpoint_manager, CheckpointStage
+from ._checkpointing import (
+    CheckpointManager,
+    create_checkpoint_manager,
+    CheckpointStage,
+)
 from ._retry_manager import RetryManager, create_retry_manager
 from ._rate_limiting import RateLimiter, create_rate_limiter, DashboardType
-from ._progress_tracking import ProgressTracker, create_progress_tracker, progress_context
+from ._progress_tracking import (
+    ProgressTracker,
+    create_progress_tracker,
+    progress_context,
+)
 from ._estimation_db import EstimationDatabase, create_estimation_database
 
 
@@ -89,7 +97,7 @@ class HiRAG:
     )
     enable_local: bool = True
     enable_naive_rag: bool = False
-    enable_hierachical_mode: bool = True
+    enable_hierarchical_mode: bool = True
     chunk_func: Callable[
         [
             list[list[int]],
@@ -160,35 +168,37 @@ class HiRAG:
     edm_memory_batch_size: int = 1000  # Memory-efficient batch processing size
 
     # --- Advanced Pipeline Infrastructure Configuration ---
-    
+
     # Token Estimation System
     enable_token_estimation: bool = True
-    token_estimation_tiktoken_model: str = "gpt-4o"  # Inherited from tiktoken_model_name
-    
+    token_estimation_tiktoken_model: str = (
+        "gpt-4o"  # Inherited from tiktoken_model_name
+    )
+
     # Checkpointing System
     enable_checkpointing: bool = True
     checkpoint_auto_interval: float = 30.0  # Auto-checkpoint every 30 seconds
     checkpoint_max_history: int = 10  # Keep last 10 checkpoints
-    
+
     # Retry Management System
     enable_retry_management: bool = True
     retry_default_max_attempts: int = 3
     retry_default_initial_delay: float = 1.0
     retry_default_max_delay: float = 60.0
     retry_enable_circuit_breaker: bool = True
-    
-    # Rate Limiting System  
+
+    # Rate Limiting System
     enable_rate_limiting: bool = True
     rate_limiting_adaptive_adjustment: bool = True
     rate_limiting_conservative_mode: bool = False  # Use conservative limits
-    
+
     # Progress Tracking and Dashboard
     enable_progress_tracking: bool = True
     progress_dashboard_type: str = "terminal"  # "terminal", "web", "console_log"
     progress_update_interval: float = 1.0
     progress_enable_web_dashboard: bool = False
     progress_web_port: int = 8080
-    
+
     # Estimation Database for Learning
     enable_estimation_learning: bool = True
     estimation_db_max_records: int = 10000
@@ -390,46 +400,68 @@ class HiRAG:
     def _initialize_advanced_systems(self):
         """Initialize all advanced pipeline infrastructure systems"""
         logger.info("Initializing advanced pipeline infrastructure...")
-        
+
         # Initialize storage for new systems
         self.checkpoint_storage = None
         self.retry_stats_storage = None
         self.rate_limit_stats_storage = None
         self.estimation_db_storage = None
         self.progress_storage = None
-        
-        if (self.enable_checkpointing or self.enable_retry_management or 
-            self.enable_rate_limiting or self.enable_estimation_learning or
-            self.enable_progress_tracking):
-            
+
+        if (
+            self.enable_checkpointing
+            or self.enable_retry_management
+            or self.enable_rate_limiting
+            or self.enable_estimation_learning
+            or self.enable_progress_tracking
+        ):
             # Create additional storage instances for new systems
-            self.checkpoint_storage = self.key_string_value_json_storage_cls(
-                namespace="checkpoints", global_config=asdict(self)
-            ) if self.enable_checkpointing else None
-            
-            self.retry_stats_storage = self.key_string_value_json_storage_cls(
-                namespace="retry_stats", global_config=asdict(self)
-            ) if self.enable_retry_management else None
-            
-            self.rate_limit_stats_storage = self.key_string_value_json_storage_cls(
-                namespace="rate_limit_stats", global_config=asdict(self)
-            ) if self.enable_rate_limiting else None
-            
-            self.estimation_db_storage = self.key_string_value_json_storage_cls(
-                namespace="estimation_db", global_config=asdict(self)
-            ) if self.enable_estimation_learning else None
-            
-            self.progress_storage = self.key_string_value_json_storage_cls(
-                namespace="progress_tracking", global_config=asdict(self)
-            ) if self.enable_progress_tracking else None
+            self.checkpoint_storage = (
+                self.key_string_value_json_storage_cls(
+                    namespace="checkpoints", global_config=asdict(self)
+                )
+                if self.enable_checkpointing
+                else None
+            )
+
+            self.retry_stats_storage = (
+                self.key_string_value_json_storage_cls(
+                    namespace="retry_stats", global_config=asdict(self)
+                )
+                if self.enable_retry_management
+                else None
+            )
+
+            self.rate_limit_stats_storage = (
+                self.key_string_value_json_storage_cls(
+                    namespace="rate_limit_stats", global_config=asdict(self)
+                )
+                if self.enable_rate_limiting
+                else None
+            )
+
+            self.estimation_db_storage = (
+                self.key_string_value_json_storage_cls(
+                    namespace="estimation_db", global_config=asdict(self)
+                )
+                if self.enable_estimation_learning
+                else None
+            )
+
+            self.progress_storage = (
+                self.key_string_value_json_storage_cls(
+                    namespace="progress_tracking", global_config=asdict(self)
+                )
+                if self.enable_progress_tracking
+                else None
+            )
 
         # Initialize Token Estimation System
         self.token_estimator = None
         if self.enable_token_estimation:
             try:
                 self.token_estimator = create_token_estimator(
-                    global_config=asdict(self),
-                    estimation_db=self.estimation_db_storage
+                    global_config=asdict(self), estimation_db=self.estimation_db_storage
                 )
                 logger.info("Token estimation system initialized")
             except Exception as e:
@@ -443,21 +475,21 @@ class HiRAG:
                 self.estimation_database = create_estimation_database(
                     storage=self.estimation_db_storage,
                     max_records=self.estimation_db_max_records,
-                    cleanup_days=self.estimation_db_cleanup_days
+                    cleanup_days=self.estimation_db_cleanup_days,
                 )
                 logger.info("Estimation database initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize estimation database: {e}")
                 self.enable_estimation_learning = False
 
-        # Initialize Checkpointing System  
+        # Initialize Checkpointing System
         self.checkpoint_manager = None
         if self.enable_checkpointing and self.checkpoint_storage:
             try:
                 self.checkpoint_manager = create_checkpoint_manager(
                     checkpoint_storage=self.checkpoint_storage,
                     auto_checkpoint_interval=self.checkpoint_auto_interval,
-                    max_checkpoints=self.checkpoint_max_history
+                    max_checkpoints=self.checkpoint_max_history,
                 )
                 logger.info("Checkpointing system initialized")
             except Exception as e:
@@ -472,7 +504,7 @@ class HiRAG:
                     stats_storage=self.retry_stats_storage,
                     default_max_attempts=self.retry_default_max_attempts,
                     default_initial_delay=self.retry_default_initial_delay,
-                    default_max_delay=self.retry_default_max_delay
+                    default_max_delay=self.retry_default_max_delay,
                 )
                 logger.info("Retry management system initialized")
             except Exception as e:
@@ -485,16 +517,17 @@ class HiRAG:
             try:
                 self.rate_limiter = create_rate_limiter(
                     stats_storage=self.rate_limit_stats_storage,
-                    enable_adaptive_adjustment=self.rate_limiting_adaptive_adjustment
+                    enable_adaptive_adjustment=self.rate_limiting_adaptive_adjustment,
                 )
-                
+
                 # Apply conservative limits if requested
                 if self.rate_limiting_conservative_mode:
                     from ._rate_limiting import get_conservative_limits
+
                     conservative_limits = get_conservative_limits()
                     for model_name, config in conservative_limits.items():
                         self.rate_limiter.configure_model(model_name, config)
-                
+
                 logger.info("Rate limiting system initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize rate limiting system: {e}")
@@ -509,79 +542,82 @@ class HiRAG:
                     "terminal": DashboardType.TERMINAL,
                     "web": DashboardType.WEB,
                     "console_log": DashboardType.CONSOLE_LOG,
-                    "json_export": DashboardType.JSON_EXPORT
+                    "json_export": DashboardType.JSON_EXPORT,
                 }
                 dashboard_type = dashboard_type_map.get(
-                    self.progress_dashboard_type.lower(), 
-                    DashboardType.TERMINAL
+                    self.progress_dashboard_type.lower(), DashboardType.TERMINAL
                 )
-                
+
                 self.progress_tracker = create_progress_tracker(
                     dashboard_type=dashboard_type,
                     storage=self.progress_storage,
-                    update_interval=self.progress_update_interval
+                    update_interval=self.progress_update_interval,
                 )
-                
+
                 # Set component references for monitoring
                 self.progress_tracker.set_components(
-                    rate_limiter=self.rate_limiter,
-                    retry_manager=self.retry_manager
+                    rate_limiter=self.rate_limiter, retry_manager=self.retry_manager
                 )
-                
-                logger.info(f"Progress tracking system initialized with {dashboard_type.value} dashboard")
+
+                logger.info(
+                    f"Progress tracking system initialized with {dashboard_type.value} dashboard"
+                )
             except Exception as e:
                 logger.error(f"Failed to initialize progress tracking system: {e}")
                 self.enable_progress_tracking = False
 
         # Wrap LLM functions with new systems
         self._wrap_llm_functions()
-        
+
         logger.info("Advanced pipeline infrastructure initialization completed")
 
     def _wrap_llm_functions(self):
         """Wrap LLM functions with retry and rate limiting"""
         if not (self.enable_retry_management or self.enable_rate_limiting):
             return
-        
+
         try:
             original_best_model = self.best_model_func
             original_cheap_model = self.cheap_model_func
-            
+
             # Create enhanced LLM wrapper
-            async def enhanced_llm_wrapper(original_func, call_type: LLMCallType, *args, **kwargs):
+            async def enhanced_llm_wrapper(
+                original_func, call_type: LLMCallType, *args, **kwargs
+            ):
                 """Enhanced LLM wrapper with retry, rate limiting, and monitoring"""
-                
+
                 # Extract or estimate tokens for rate limiting
                 estimated_tokens = 1000  # Default estimate
                 if self.token_estimator:
                     try:
                         # This is a simplified estimation - in practice you'd want more sophisticated logic
-                        prompt_text = str(args[0]) if args else str(kwargs.get('prompt', ''))
-                        estimated_tokens = self.token_estimator.count_tokens(prompt_text)
+                        prompt_text = (
+                            str(args[0]) if args else str(kwargs.get("prompt", ""))
+                        )
+                        estimated_tokens = self.token_estimator.count_tokens(
+                            prompt_text
+                        )
                     except Exception:
                         pass  # Use default if estimation fails
-                
+
                 # Apply rate limiting
                 if self.rate_limiter:
                     model_name = self._extract_model_name_from_func(original_func)
                     await self.rate_limiter.acquire(
                         model_name=model_name,
                         call_type=call_type,
-                        estimated_tokens=estimated_tokens
+                        estimated_tokens=estimated_tokens,
                     )
-                
+
                 try:
                     # Apply retry logic
                     if self.retry_manager:
                         result = await self.retry_manager.execute_with_retry(
-                            func=original_func,
-                            call_type=call_type,
-                            *args,
-                            **kwargs
+                            func=original_func, call_type=call_type, *args, **kwargs
                         )
                     else:
                         result = await original_func(*args, **kwargs)
-                    
+
                     # Release rate limit and record success
                     if self.rate_limiter:
                         actual_tokens = len(str(result)) // 4  # Rough estimate
@@ -589,11 +625,11 @@ class HiRAG:
                             model_name=model_name,
                             call_type=call_type,
                             actual_tokens_used=actual_tokens,
-                            success=True
+                            success=True,
                         )
-                    
+
                     return result
-                    
+
                 except Exception as e:
                     # Release rate limit and record failure
                     if self.rate_limiter:
@@ -602,33 +638,33 @@ class HiRAG:
                             call_type=call_type,
                             actual_tokens_used=0,
                             success=False,
-                            rate_limited="rate" in str(e).lower()
+                            rate_limited="rate" in str(e).lower(),
                         )
                     raise
-            
+
             # Note: In practice, you'd want to wrap specific functions with specific call types
             # This is a simplified example
             logger.info("LLM functions wrapped with enhanced capabilities")
-            
+
         except Exception as e:
             logger.error(f"Failed to wrap LLM functions: {e}")
 
     def _extract_model_name_from_func(self, func) -> str:
         """Extract model name from function for rate limiting"""
-        func_name = getattr(func, '__name__', str(func))
-        
+        func_name = getattr(func, "__name__", str(func))
+
         # Map function names to model names
         model_mapping = {
-            'gpt_4o_complete': 'gpt-4o',
-            'gpt_4o_mini_complete': 'gpt-4o-mini',
-            'gpt_35_turbo_complete': 'gpt-3.5-turbo',
-            'azure_gpt_4o_complete': 'gpt-4o',
-            'azure_gpt_4o_mini_complete': 'gpt-4o-mini',
-            'gemini_pro_complete': 'gemini-1.5-pro',
-            'gemini_flash_complete': 'gemini-1.5-flash'
+            "gpt_4o_complete": "gpt-4o",
+            "gpt_4o_mini_complete": "gpt-4o-mini",
+            "gpt_35_turbo_complete": "gpt-3.5-turbo",
+            "azure_gpt_4o_complete": "gpt-4o",
+            "azure_gpt_4o_mini_complete": "gpt-4o-mini",
+            "gemini_pro_complete": "gemini-1.5-pro",
+            "gemini_flash_complete": "gemini-1.5-flash",
         }
-        
-        return model_mapping.get(func_name, 'gpt-4o-mini')  # Default fallback
+
+        return model_mapping.get(func_name, "gpt-4o-mini")  # Default fallback
 
     def insert(self, string_or_strings):
         loop = always_get_an_event_loop()
@@ -761,7 +797,7 @@ class HiRAG:
             raw_nodes = []
             raw_edges = []
 
-            if not self.enable_hierachical_mode:
+            if not self.enable_hierarchical_mode:
                 logger.info("[Entity Extraction]...")
                 try:
                     maybe_new_kg = await self.entity_extraction_func(
