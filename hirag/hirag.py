@@ -516,7 +516,7 @@ class HiRAG:
                             # Use the same key format as the original code
                             vdb_key = compute_mdhash_id(entity_name, prefix="ent-")
                             data_for_vdb[vdb_key] = {
-                                "content": entity_name + description,
+                                "content": entity_name + " " + description,
                                 "entity_name": entity_name,
                             }
                 
