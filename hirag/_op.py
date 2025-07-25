@@ -6,7 +6,7 @@ import networkx as nx
 import time
 import logging
 from contextlib import contextmanager
-from typing import Union, Tuple, List, Dict
+from typing import Union, Tuple, List, Dict, Optional
 from collections import Counter, defaultdict
 from ._splitter import SeparatorSplitter
 from ._utils import (
@@ -335,6 +335,7 @@ async def extract_hierarchical_entities(
     knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
     global_config: dict,
+    entity_names_vdb: Optional[BaseVectorStorage] = None,
 ) -> Tuple[List[Dict], List[Dict]]:
     """Extract entities and relations from text chunks
     
@@ -657,6 +658,34 @@ async def extract_hierarchical_entities(
         raw_edges.append(representative)
 
     logger.info(f"Extracted {len(raw_nodes)} unique entities and {len(raw_edges)} unique relations for disambiguation")
+    
+    # Store entity names in dedicated vector database for efficient disambiguation
+    if entity_names_vdb is not None and raw_nodes:
+        try:
+            logger.info(f"Storing {len(raw_nodes)} entity names in vector database for disambiguation")
+            
+            # Prepare data for entity names vector database
+            entity_name_data = {}
+            for node in raw_nodes:
+                entity_name = node.get("entity_name", "")
+                if entity_name and node.get("embedding") is not None:
+                    # Store just the entity name (not the full description) for efficient name-based search
+                    entity_name_data[entity_name] = {
+                        "content": entity_name,  # Store the name itself as content
+                        "entity_name": entity_name,
+                        "entity_type": node.get("entity_type", ""),
+                        "is_temporary": node.get("is_temporary", False),
+                    }
+            
+            if entity_name_data:
+                await entity_names_vdb.upsert(entity_name_data)
+                logger.info(f"Successfully stored {len(entity_name_data)} entity names in vector database")
+            else:
+                logger.warning("No valid entity names to store in vector database")
+                
+        except Exception as e:
+            logger.error(f"Failed to store entity names in vector database: {e}")
+            # Don't fail the entire extraction process if name storage fails
     
     return raw_nodes, raw_edges
 
