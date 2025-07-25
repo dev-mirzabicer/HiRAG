@@ -88,7 +88,7 @@ Output:
 ("entity"{tuple_delimiter}"CL_ζ"{tuple_delimiter}"object"{tuple_delimiter}"A rule-based extensional theory. It is theorem-equivalent to CL_ξ+η."{tuple_delimiter}false){record_delimiter}
 ("entity"{tuple_delimiter}"CL_ξ+η"{tuple_delimiter}"object"{tuple_delimiter}"A rule-based extensional theory. It is theorem-equivalent to CL_ζ."{tuple_delimiter}false){record_delimiter}
 ("entity"{tuple_delimiter}"THEOREM-EQUIVALENT"{tuple_delimiter}"property"{tuple_delimiter}"A property held by two theories that prove the same set of theorems or equivalences between terms."{tuple_delimiter}false){record_delimiter}
-("entity"{tuple_delimiter}"=_ext (EXTENSIONAL EQUALITY)"{tuple_delimiter}"object"{tuple_delimiter}"The relation of extensional equality, which is defined identically by the theories CL_ζ and CL_ξ+η."{tuple_delimiter}false){completion_delimiter}
+("entity"{tuple_delimiter}"=_ext"{tuple_delimiter}"object"{tuple_delimiter}"The relation of extensional equality, which is defined identically by the theories CL_ζ and CL_ξ+η."{tuple_delimiter}false){completion_delimiter}
 
 Example 3:
 Entity_types: [postulate, object, concept, property, proof]
