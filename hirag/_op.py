@@ -32,6 +32,7 @@ from .base import (
     QueryParam,
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .config import get_text_processing_config, get_performance_config
 from ._cluster_utils import Hierarchical_Clustering
 
 
@@ -50,9 +51,15 @@ def chunking_by_token_size(
     tokens_list: list[list[int]],
     doc_keys,
     tiktoken_model,
-    overlap_token_size=128,
-    max_token_size=1024,
+    overlap_token_size: Optional[int] = None,
+    max_token_size: Optional[int] = None,
 ):
+    # Use configuration defaults if not provided
+    text_config = get_text_processing_config()
+    if overlap_token_size is None:
+        overlap_token_size = text_config.overlap_token_size
+    if max_token_size is None:
+        max_token_size = text_config.chunk_token_size  # Use chunk_token_size as max
     # tokenizer
     results = []
     for index, tokens in enumerate(tokens_list):
@@ -81,9 +88,15 @@ def chunking_by_seperators(
     tokens_list: list[list[int]],
     doc_keys,
     tiktoken_model,
-    overlap_token_size=128,
-    max_token_size=1024,
+    overlap_token_size: Optional[int] = None,
+    max_token_size: Optional[int] = None,
 ):
+    # Use configuration defaults if not provided
+    text_config = get_text_processing_config()
+    if overlap_token_size is None:
+        overlap_token_size = text_config.overlap_token_size
+    if max_token_size is None:
+        max_token_size = text_config.chunk_token_size
     splitter = SeparatorSplitter(
         separators=[
             tiktoken_model.encode(s) for s in PROMPTS["default_text_separator"]
@@ -118,8 +131,10 @@ def get_chunks(new_docs, chunk_func=chunking_by_token_size, **chunk_func_params)
     docs = [new_doc[1]["content"] for new_doc in new_docs_list]
     doc_keys = [new_doc[0] for new_doc in new_docs_list]
 
+    # Use configuration for encoding settings
+    text_config = get_text_processing_config()
     ENCODER = tiktoken.encoding_for_model("gpt-4o")
-    tokens = ENCODER.encode_batch(docs, num_threads=16)
+    tokens = ENCODER.encode_batch(docs, num_threads=text_config.encoding_num_threads)
     chunks = chunk_func(
         tokens, doc_keys=doc_keys, tiktoken_model=ENCODER, **chunk_func_params
     )
@@ -476,7 +491,9 @@ async def extract_hierarchical_entities(
     # fetch embeddings for base entities
     entity_discriptions = [v["description"] for k, v in all_entities.items()]
     entity_sequence_embeddings = []
-    embeddings_batch_size = 64
+    # Use configuration for batch size
+    performance_config = get_performance_config()
+    embeddings_batch_size = performance_config.embeddings_batch_size
     num_embeddings_batches = (
         len(entity_discriptions) + embeddings_batch_size - 1
     ) // embeddings_batch_size
@@ -886,10 +903,14 @@ def _pack_single_community_by_sub_communities(
 async def _pack_single_community_describe(
     knwoledge_graph_inst: BaseGraphStorage,
     community: SingleCommunitySchema,
-    max_token_size: int = 12000,
+    max_token_size: Optional[int] = None,
     already_reports: dict[str, CommunitySchema] = {},
     global_config: dict = {},
 ) -> str:
+    # Use configuration default if not provided
+    if max_token_size is None:
+        performance_config = get_performance_config()
+        max_token_size = performance_config.community_report_max_token_size
     nodes_in_order = sorted(community["nodes"])
     edges_in_order = sorted(community["edges"], key=lambda x: x[0] + x[1])
 

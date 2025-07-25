@@ -19,23 +19,52 @@ from .base import (
 from ._utils import split_string_by_multi_markers, clean_str, is_float_regex
 from ._validation import validate
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .config import get_graph_operations_config
 
 # Initialize logging
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 
-# Set a random seed for reproducibility
-RANDOM_SEED = 224
+# Get configuration for default values, but allow runtime override
+def get_clustering_defaults():
+    """Get clustering defaults from centralized configuration"""
+    config = get_graph_operations_config()
+    return {
+        'random_seed': config.random_seed,
+        'umap_n_neighbors': config.umap_n_neighbors,
+        'umap_metric': config.umap_metric,
+        'max_clusters': config.max_clusters,
+        'gmm_n_init': config.gmm_n_init,
+        'hierarchical_layers': config.hierarchical_layers,
+        'max_length_in_cluster': config.max_length_in_cluster,
+        'reduction_dimension': config.reduction_dimension,
+        'cluster_threshold': config.cluster_threshold,
+        'similarity_threshold': config.similarity_threshold,
+        'embeddings_batch_size': 64  # This was in the original code
+    }
+
+# Set a random seed for reproducibility using configuration
+_defaults = get_clustering_defaults()
+RANDOM_SEED = _defaults['random_seed']
 random.seed(RANDOM_SEED)
 
 
 def global_cluster_embeddings(
     embeddings: np.ndarray,
     dim: int,
-    n_neighbors: int = 15,
-    metric: str = "cosine",
+    n_neighbors: Optional[int] = None,
+    metric: Optional[str] = None,
 ) -> np.ndarray:
+    # Use configuration defaults if not provided
+    defaults = get_clustering_defaults()
+    if n_neighbors is None:
+        n_neighbors = defaults['umap_n_neighbors']
+    if metric is None:
+        metric = defaults['umap_metric']
+        
+    # Auto-calculate n_neighbors if still None
     if n_neighbors is None:
         n_neighbors = int((len(embeddings) - 1) ** 0.5)
+        
     reduced_embeddings = umap.UMAP(
         n_neighbors=n_neighbors, n_components=dim, metric=metric
     ).fit_transform(embeddings)
@@ -43,8 +72,18 @@ def global_cluster_embeddings(
 
 
 def local_cluster_embeddings(
-    embeddings: np.ndarray, dim: int, num_neighbors: int = 10, metric: str = "cosine"
+    embeddings: np.ndarray, 
+    dim: int, 
+    num_neighbors: Optional[int] = None, 
+    metric: Optional[str] = None
 ) -> np.ndarray:
+    # Use configuration defaults if not provided
+    defaults = get_clustering_defaults()
+    if num_neighbors is None:
+        num_neighbors = 10  # Keep original default for local clustering
+    if metric is None:
+        metric = defaults['umap_metric']
+        
     reduced_embeddings = umap.UMAP(
         n_neighbors=num_neighbors, n_components=dim, metric=metric
     ).fit_transform(embeddings)
@@ -62,7 +101,11 @@ def fit_gaussian_mixture(n_components, embeddings, random_state):
     return gm.bic(embeddings)
 
 
-def get_optimal_clusters(embeddings, max_clusters=50, random_state=0, rel_tol=1e-3):
+def get_optimal_clusters(embeddings, max_clusters: Optional[int] = None, random_state: int = 0, rel_tol: float = 1e-3):
+    # Use configuration defaults if not provided
+    defaults = get_clustering_defaults()
+    if max_clusters is None:
+        max_clusters = defaults['max_clusters']
     max_clusters = min(len(embeddings), max_clusters)
     n_clusters = np.arange(1, max_clusters)
     bics = []
@@ -79,12 +122,17 @@ def get_optimal_clusters(embeddings, max_clusters=50, random_state=0, rel_tol=1e
     return optimal_clusters
 
 
-def GMM_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0):
+def GMM_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0, n_init: Optional[int] = None):
+    # Use configuration defaults if not provided
+    defaults = get_clustering_defaults()
+    if n_init is None:
+        n_init = defaults['gmm_n_init']
+        
     n_clusters = get_optimal_clusters(embeddings)
     gm = GaussianMixture(
         n_components=n_clusters, 
         random_state=random_state, 
-        n_init=5,
+        n_init=n_init,
         init_params='k-means++')
     gm.fit(embeddings)
     probs = gm.predict_proba(embeddings)        # [num, cluster_num]
@@ -189,15 +237,27 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
         entity_vdb: BaseVectorStorage,
         global_config: dict,
         entities: dict,
-        layers: int = 50,
-        max_length_in_cluster: int = 60000,
+        layers: Optional[int] = None,
+        max_length_in_cluster: Optional[int] = None,
         tokenizer=tiktoken.get_encoding("cl100k_base"),
-        reduction_dimension: int = 2,
-        cluster_threshold: float = 0.1,
+        reduction_dimension: Optional[int] = None,
+        cluster_threshold: Optional[float] = None,
         verbose: bool = False,
-        threshold: float = 0.98, # 0.99
+        threshold: Optional[float] = None,
         thredshold_change_rate: float = 0.05
     ) -> List[dict]:
+        # Use configuration defaults if not provided
+        defaults = get_clustering_defaults()
+        if layers is None:
+            layers = defaults['hierarchical_layers']
+        if max_length_in_cluster is None:
+            max_length_in_cluster = defaults['max_length_in_cluster']
+        if reduction_dimension is None:
+            reduction_dimension = defaults['reduction_dimension']
+        if cluster_threshold is None:
+            cluster_threshold = defaults['cluster_threshold']
+        if threshold is None:
+            threshold = defaults['similarity_threshold']
         use_llm_func: callable = global_config["best_model_func"]
         # Get the embeddings from the nodes
         nodes = list(entities.values())
@@ -318,7 +378,7 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                 # fetch embeddings
                 entity_discriptions = [v["description"] for k, v in all_entities_relations.items()]
                 entity_sequence_embeddings = []
-                embeddings_batch_size = 64
+                embeddings_batch_size = get_clustering_defaults()['embeddings_batch_size']
                 num_embeddings_batches = (len(entity_discriptions) + embeddings_batch_size - 1) // embeddings_batch_size
                 for i in range(num_embeddings_batches):
                     start_index = i * embeddings_batch_size
