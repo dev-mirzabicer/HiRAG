@@ -1,252 +1,262 @@
-Welcome to HiRAG. This document is the definitive guide for any agent or developer interacting with this codebase. By understanding this guide, you will gain an expert-level comprehension of the system's architecture, capabilities, and operational workflows.
+## Introduction
 
-## 1. Mission and Philosophy
+Welcome to the definitive guide for agents and developers interacting with the **HiRAG (Hierarchical Retrieval-Augmented Generation)** codebase. This document provides an exhaustive, in-depth exploration of the entire system, designed to make you an expert on its architecture, components, workflows, and underlying philosophy.
 
-**HiRAG is not just another RAG system; it is a knowledge structuring engine.**
+HiRAG is a sophisticated, end-to-end system for transforming unstructured text into a structured, hierarchical knowledge graph. It goes beyond traditional RAG by not only storing text chunks but also extracting entities and relationships, organizing them into a graph, and then discovering high-level conceptual communities within that graph. This multi-layered structure enables a powerful, context-aware retrieval process that can answer complex queries by navigating from high-level concepts down to the specific source text.
 
-Its primary mission is to ingest unstructured text, automatically build a multi-layered, hierarchical knowledge graph from it, and equip AI agents with a powerful toolkit to reason over this structured knowledge.
+The system is engineered for robustness, observability, and extensibility, featuring advanced infrastructure for checkpointing, rate limiting, automatic retries, and progress tracking. It is designed to be used as a powerful toolkit for intelligent agents, providing them with a suite of tools to explore, reason about, and synthesize information from a rich knowledge base.
 
-The core philosophy is **"Structure First, Answers Second."** Instead of performing a flat semantic search over raw text chunks, HiRAG creates a rich, interconnected graph of concepts. This graph has multiple levels of abstraction, from fine-grained entities and relationships to high-level conceptual communities. This hierarchical structure allows an agent to perform complex reasoning, starting from a high-level overview and progressively drilling down to the most granular details and source text.
+This guide will walk you through every file, every class, and every critical function, providing the detailed understanding necessary to leverage, maintain, and extend the HiRAG system effectively.
 
-### Core Architectural Flow
+---
 
-The HiRAG system follows a sophisticated ingestion and querying pipeline:
+## System Architecture
 
-1.  **Ingestion & Chunking**: Raw documents are processed, deduplicated, and broken down into manageable, token-aware text chunks.
-2.  **Hierarchical Entity & Relation Extraction**: A powerful LLM-based process extracts entities, their types, descriptions, and relationships. Crucially, it also performs **hierarchical clustering**, summarizing groups of related entities into higher-level concepts, building the graph's vertical structure.
-3.  **Entity Disambiguation & Merging (EDM)**: A critical pipeline step that identifies and merges entity aliases (e.g., "CL_η" and "The theory CL_η"). This ensures the knowledge graph is clean, consistent, and free of redundant nodes.
-4.  **Graph Construction**: The disambiguated entities and relations are upserted into a graph database backend (like NetworkX or Neo4j), forming a rich, interconnected knowledge graph.
-5.  **Community Detection & Reporting**: The system runs a clustering algorithm (e.g., Leiden) on the graph to identify dense communities of related concepts. It then uses an LLM to generate detailed, human-readable reports for each community, creating the highest level of abstraction.
-6.  **Agentic Querying**: The system exposes a suite of powerful, granular tools for an AI agent. Instead of a single query function, the agent can now explore the graph, find entities, trace relationships, discover reasoning paths, and pull context from different levels of the hierarchy to construct its own answers.
+The HiRAG pipeline can be understood as a series of data transformation stages, managed by a robust infrastructure. The core data flow is as follows:
 
-## 2. Directory Structure
+1.  **Ingestion & Chunking**: Raw text documents are ingested, validated, and broken down into smaller, manageable `TextChunkSchema` objects. This process is handled by functions in `_op.py` and configurable via `hirag.py`.
 
-The codebase is organized logically to separate storage backends, core logic, and configuration.
+2.  **Hierarchical Knowledge Extraction**: This is the core of HiRAG's innovation. An LLM processes each text chunk to perform:
+    *   **Entity Extraction**: Identifying key entities (postulates, objects, concepts, etc.) and classifying them as 'temporary' or 'non-temporary'.
+    *   **Relationship Extraction**: Identifying the connections between these entities.
+    *   This process, defined in `_op.py` (`extract_hierarchical_entities`), produces a stream of raw nodes and edges.
+
+3.  **Entity Disambiguation & Merging (EDM)**: Before adding to the graph, the system identifies and merges entities that are aliases for the same concept. This crucial step, managed by the `EntityDisambiguator` class in `_disambiguation.py`, uses a combination of lexical similarity, semantic similarity (vector search), and LLM-based verification to create a clean, canonical set of entities.
+
+4.  **Graph Construction**: The disambiguated entities and their relationships are upserted into a graph database. This creates a structured network of knowledge. HiRAG supports multiple backends (`NetworkXStorage`, `Neo4jStorage`) defined in the `_storage` directory.
+
+5.  **Graph Clustering & Community Detection**: Once the graph is built, a clustering algorithm (e.g., Leiden) is run to identify densely connected subgraphs, or "communities." This process, initiated from `hirag.py` and implemented in the storage backends (`gdb_networkx.py`, `gdb_neo4j.py`), groups related concepts together.
+
+6.  **Community Report Generation**: For each discovered community, an LLM is used to generate a high-level, human-readable report. This report summarizes the community's core theme, key entities, and overall importance. This is orchestrated by `generate_community_report` in `_op.py`.
+
+7.  **Storage**: Throughout the process, data is persisted across multiple storage layers:
+    *   **KV Storage (`kv_json.py`)**: Stores documents, text chunks, community reports, and caches.
+    *   **Vector Storage (`vdb_nanovectordb.py`)**: Stores embeddings for entities and (optionally) chunks to enable semantic search. A dedicated VDB is used for entity names to accelerate the disambiguation process.
+    *   **Graph Storage (`gdb_networkx.py`, `gdb_neo4j.py`)**: Stores the final knowledge graph of entities and relationships.
+
+8.  **Agent Toolkit**: The final output is not just a single RAG system, but a toolkit of queryable methods (`afind_entities`, `aget_relationships`, `afind_reasoning_path`, etc.) in `hirag.py` that an intelligent agent can use to explore the knowledge base dynamically.
+
+This entire pipeline is supported by a suite of advanced infrastructure modules that manage its execution: `_checkpointing.py`, `_retry_manager.py`, `_rate_limiting.py`, `_token_estimation.py`, and `_progress_tracking.py`.
+
+---
+
+## Directory and File Structure
+
+The codebase is organized into a single main package, `hirag`, with a logical separation of concerns.
 
 ```
 └── ./
     └── hirag
-        ├── _storage                # Concrete storage backend implementations
-        │   ├── __init__.py
-        │   ├── gdb_neo4j.py        # Neo4j graph database backend
-        │   ├── gdb_networkx.py     # In-memory NetworkX graph backend
-        │   ├── kv_json.py          # Simple file-based JSON key-value store
-        │   └── vdb_nanovectordb.py # Simple file-based vector database
-        ├── __init__.py
-        ├── _cluster_utils.py       # Logic for hierarchical entity clustering
-        ├── _disambiguation.py      # The Entity Disambiguation & Merging (EDM) pipeline
-        ├── _llm.py                 # Abstractions for calling different LLM providers
-        ├── _op.py                  # Core data processing operations (extraction, merging, reporting)
-        ├── _splitter.py            # Advanced text and token splitting utilities
-        ├── _utils.py               # General utility functions (hashing, logging, etc.)
-        ├── _validation.py          # Centralized data validation functions
-        ├── base.py                 # Core data schemas and abstract storage classes
-        ├── hirag.py                # The main HiRAG class and central orchestrator
-        └── prompt.py               # The "brain" of the system: all LLM prompts
+        ├── _storage                # Pluggable storage backend implementations.
+        │   ├── __init__.py         # Makes the storage directory a package.
+        │   ├── gdb_neo4j.py        # Neo4j graph database storage implementation.
+        │   ├── gdb_networkx.py     # NetworkX in-memory graph storage implementation.
+        │   ├── kv_json.py          # Simple JSON-based key-value storage.
+        │   └── vdb_nanovectordb.py # NanoVectorDB for vector storage.
+        ├── __init__.py             # Package initializer, exposes HiRAG class.
+        ├── _checkpointing.py       # System for saving and resuming pipeline progress.
+        ├── _cluster_utils.py       # Algorithms for hierarchical entity clustering.
+        ├── _disambiguation.py      # Entity Disambiguation and Merging (EDM) pipeline.
+        ├── _estimation_db.py       # Database for learning and improving token estimates.
+        ├── _llm.py                 # Wrappers for interacting with LLM APIs (OpenAI, Gemini, Azure).
+        ├── _op.py                  # Core data processing operations (chunking, extraction, reporting).
+        ├── _progress_tracking.py   # Real-time progress monitoring and dashboard.
+        ├── _rate_limiting.py       # Manages API call rates to avoid hitting limits.
+        ├── _retry_manager.py       # Handles transient errors with backoff and circuit breakers.
+        ├── _splitter.py            # Text splitting utilities.
+        ├── _token_estimation.py    # System for estimating API token usage and cost.
+        ├── _utils.py               # General utility functions (hashing, JSON handling, etc.).
+        ├── _validation.py          # Centralized data validation functions.
+        ├── base.py                 # Core data schemas and abstract base classes for storage.
+        ├── hirag.py                # Main HiRAG class, configuration, and public interface (Agent Toolkit).
+        └── prompt.py               # All LLM prompts used in the system.
 ```
-
-## 3. Core Concepts & Data Structures (`hirag/base.py`)
-
-The foundation of HiRAG is built on a set of well-defined abstract classes and data schemas.
-
-*   **`StorageNameSpace`**: A base class for all storage modules, ensuring they have a `namespace` and access to the global configuration. It defines lifecycle callbacks: `index_start_callback`, `index_done_callback`.
-*   **`BaseKVStorage[T]`**: An abstract interface for key-value stores (e.g., for text chunks, community reports).
-*   **`BaseVectorStorage`**: An abstract interface for vector databases, defining `query` and `upsert` methods.
-*   **`BaseGraphStorage`**: An abstract interface for graph databases, defining essential graph operations like `upsert_node`, `get_edge`, `clustering`, `community_schema`, etc.
-
-### Key Data Schemas:
-
-*   **`TextChunkSchema`**: Represents a piece of text derived from a full document.
-    *   `tokens`: Number of tokens in the chunk.
-    *   `content`: The actual text content.
-    *   `full_doc_id`: The ID of the source document.
-    *   `chunk_order_index`: The position of this chunk within the document.
-*   **`SingleCommunitySchema` & `CommunitySchema`**: Represent a detected community in the graph.
-    *   `level`: The hierarchical level of the community.
-    *   `title`: A human-readable title.
-    *   `nodes` & `edges`: The components of the community.
-    *   `chunk_ids`: Source text chunks associated with the community's nodes.
-    *   `sub_communities`: A list of child community IDs, forming the hierarchy.
-    *   `report_string` & `report_json` (in `CommunitySchema`): The LLM-generated analysis of the community.
-*   **`QueryParam`**: A dataclass that allows fine-grained control over the querying and context-building process, specifying things like retrieval depth (`level`), number of entities (`top_k`), and token limits for different context types.
 
 ---
 
-## 4. File-by-File Deep Dive
+## File-by-File Deep Dive
 
-### `hirag/hirag.py`: The Central Orchestrator
+This section provides a rigorous analysis of each file in the codebase.
 
-This is the most important file, containing the main `HiRAG` class that brings all the components together.
+### `/hirag/hirag.py`
 
-#### **`HiRAG` Class & Configuration**
+*   **Purpose**: This is the main entry point and central orchestrator of the HiRAG system. It defines the `HiRAG` dataclass, which holds all configuration parameters, initializes all storage backends and infrastructure systems, and exposes the public API for both indexing (`ainsert`) and querying (the Agent Toolkit).
 
-The class is a dataclass holding the entire system's configuration. Key parameters include:
+*   **Key Classes & Functions**:
+    *   **`HiRAG` (dataclass)**: This class is the heart of the system.
+        *   **Configuration**: It holds over 50 configuration fields, controlling everything from chunking strategy and LLM models to the behavior of the advanced infrastructure systems (e.g., `enable_checkpointing`, `edm_lexical_similarity_threshold`).
+        *   **`__post_init__`**: This method is critical. It reads the configuration, creates instances of all necessary storage backends (KV, Vector, Graph), initializes the infrastructure managers (`TokenEstimator`, `CheckpointManager`, `RetryManager`, `RateLimiter`, `ProgressTracker`), and wraps the LLM functions with rate limiting and retry logic. It also initializes the `EntityDisambiguator`.
+        *   **`ainsert(string_or_strings)`**: The primary method for indexing data. It orchestrates the entire pipeline: chunking, hierarchical entity/relation extraction, entity disambiguation, graph upsertion, clustering, and community report generation. The implementation is robust, with detailed error handling and state tracking.
+        *   **Agent Toolkit Methods**: This is the modern query interface.
+            *   `aget_community_toc(level)`: Provides a high-level summary of communities.
+            *   `afind_entities(query, top_k, temporary)`: Performs semantic search for entities.
+            *   `aget_entity_details(entity_name)`: Retrieves all data for a specific entity.
+            *   `aget_relationships(entity_name)`: Fetches all connections for an entity.
+            *   `aget_source_text(entity_name)`: Retrieves the original text chunks for an entity.
+            *   `afind_reasoning_path(...)`: Finds the shortest path between two entities, supporting multiple algorithms and backends (NetworkX, Neo4j). It contains backend-specific logic (`_find_path_networkx`, `_find_path_neo4j`).
+            *   `afind_multiple_reasoning_paths(...)`: Finds the k-shortest paths.
+        *   **`aquery(query, param)` (Deprecated)**: The legacy, monolithic query method. It builds a single, large context string and passes it to an LLM. It is preserved for backward compatibility but superseded by the agent toolkit.
+        *   **`_upsert_disambiguated_graph(...)`**: A crucial internal method that takes the raw extracted nodes and edges, applies the canonical mapping from the disambiguation step, and carefully merges and upserts the data into the graph storage, handling potential conflicts and self-loops.
 
-*   **Storage & Backend Selection**:
-    *   `working_dir`: Where all cached files and databases are stored.
-    *   `key_string_value_json_storage_cls`: The class to use for KV storage (default: `JsonKVStorage`).
-    *   `vector_db_storage_cls`: The class for vector storage (default: `NanoVectorDBStorage`).
-    *   `graph_storage_cls`: The class for graph storage (default: `NetworkXStorage`). Can be set to `Neo4jStorage`.
-*   **LLM & Embedding Configuration**:
-    *   `using_azure_openai` / `using_gemini`: Booleans to automatically switch to Azure or Gemini models.
-    *   `best_model_func` / `cheap_model_func`: Allows specifying different models for complex reasoning vs. routine tasks.
-    *   `embedding_func`: The function used to generate vector embeddings.
-    *   `enable_llm_cache`: A boolean to cache LLM responses, saving time and cost on repeated runs.
-*   **Ingestion & Processing Control**:
-    *   `chunk_func`, `chunk_token_size`, `chunk_overlap_token_size`: Control how text is split into chunks.
-    *   `graph_cluster_algorithm`: The algorithm for community detection (default: `"leiden"`).
-    *   `enable_hierachical_mode`: A boolean to enable/disable the hierarchical entity extraction and clustering.
-*   **Entity Disambiguation & Merging (EDM) Configuration**:
-    *   `enable_entity_disambiguation`: Master switch for the EDM pipeline.
-    *   `edm_lexical_similarity_threshold`, `edm_semantic_similarity_threshold`: Thresholds for finding potential entity aliases.
-    *   `edm_max_cluster_size`: Safety limit to prevent sending excessively large alias clusters to the LLM.
-    *   `edm_min_merge_confidence`: The minimum confidence score required from the LLM to perform a merge.
-    *   `enable_entity_names_vdb`: A crucial performance optimization that stores entity names in a dedicated vector DB for faster semantic similarity checks.
+### `/hirag/base.py`
 
-#### **`__post_init__`**
+*   **Purpose**: Defines the abstract foundations and data contracts for the entire system. It ensures that different storage implementations adhere to a consistent interface and establishes the core data schemas.
 
-This method initializes the entire HiRAG ecosystem based on the configuration. It:
-1.  Sets up the working directory.
-2.  Switches LLM and embedding functions if Azure or Gemini is specified.
-3.  Instantiates all storage backends (`full_docs`, `text_chunks`, `community_reports`, `chunk_entity_relation_graph`, `entities_vdb`, etc.).
-4.  Wraps the LLM and embedding functions with rate limiters (`limit_async_func_call`) and caching logic.
-5.  Initializes the `EntityDisambiguator` if `enable_entity_disambiguation` is true, passing it the necessary storage backends and configuration.
+*   **Key Classes & Schemas**:
+    *   **`QueryParam` (dataclass)**: Defines all parameters that control the behavior of a query, such as retrieval mode, hierarchy level, and token limits for different context types.
+    *   **`TextChunkSchema` (TypedDict)**: The schema for a single chunk of text, containing its content, token count, and source document ID.
+    *   **`SingleCommunitySchema` & `CommunitySchema` (TypedDict)**: Defines the structure of a community, including its nodes, edges, level, and the generated report.
+    *   **`StorageNameSpace` (dataclass)**: A base class for all storage backends, providing a common namespace and configuration.
+    *   **`BaseVectorStorage`, `BaseKVStorage`, `BaseGraphStorage` (Abstract Classes)**: These define the required methods for any new storage implementation. For example, `BaseGraphStorage` mandates methods like `upsert_node`, `get_edge`, `clustering`, etc., ensuring that the core logic in `hirag.py` can work with any compliant backend.
 
-#### **`ainsert(string_or_strings)`: The Ingestion Pipeline**
+### `/hirag/_op.py`
 
-This is the main method for adding new knowledge to the system. It's a robust, multi-step asynchronous process:
+*   **Purpose**: Contains the core, stateless data processing operations that form the steps of the ingestion pipeline. These functions are called by `hirag.py` to transform data from one stage to the next.
 
-1.  **Doc Processing**: Input strings are converted into documents and filtered against existing ones in `full_docs`.
-2.  **Chunking**: `get_chunks` is called to split the new documents into `TextChunkSchema` objects.
-3.  **Hierarchical Extraction**: `hierarchical_entity_extraction_func` (`extract_hierarchical_entities` by default) is called. This is a core innovation where an LLM extracts entities and then recursively summarizes clusters of them to build up a hierarchy. It returns `raw_nodes` and `raw_edges`.
-4.  **Disambiguation**: If enabled, the `disambiguator.run(raw_nodes)` method is called. It takes the raw extracted nodes, finds potential aliases, and uses an LLM to produce a `name_to_canonical_map`.
-5.  **Graph Upsertion**: The `_upsert_disambiguated_graph` method is called with the raw nodes, edges, and the disambiguation map. It intelligently merges the data before writing it to the graph storage backend.
-6.  **Community Building**: After the graph is updated, `chunk_entity_relation_graph.clustering()` is called to detect communities. Then, `generate_community_report` uses an LLM to create analytical reports for each new community.
-7.  **Finalization**: All changes are committed to the storage backends via their `index_done_callback` methods.
+*   **Key Functions**:
+    *   **`get_chunks(...)`**: Takes raw documents and uses a specified chunking function (`chunking_by_token_size` or `chunking_by_seperators`) to produce a dictionary of `TextChunkSchema`.
+    *   **`extract_hierarchical_entities(...)`**: This is a major function. It takes text chunks and orchestrates the LLM-based extraction of entities and relationships. It manages a multi-step process for each chunk, including an initial extraction, subsequent "gleaning" loops to find missed entities, and a check to prevent infinite loops. It now returns raw nodes and edges, including embeddings, ready for the disambiguation pipeline. It also handles storing entity names in a dedicated VDB if enabled.
+    *   **`_merge_nodes_then_upsert(...)` & `_merge_edges_then_upsert(...)`**: These functions contain the logic for merging data. When multiple extractions produce the same entity or relationship, these functions intelligently combine their properties (e.g., summing weights, concatenating descriptions, choosing the most common entity type) before upserting the final, merged record into the graph. They also handle summarizing long descriptions using an LLM.
+    *   **`generate_community_report(...)`**: Manages the process of creating summary reports for each community. It iterates through communities by level (from most specific to most general), packs the community's data into a context string for the LLM using `_pack_single_community_describe`, calls the LLM with the appropriate prompt, and stores the resulting JSON report.
+    *   **Query Helper Functions (Deprecated)**: Functions like `find_most_related_community_from_entities` are now largely superseded by the more encapsulated logic within the `HiRAG` class's agent toolkit methods.
 
-#### **Agent Toolkit: The New Query Paradigm**
+### `/hirag/_disambiguation.py`
 
-The old monolithic `query` method is deprecated. It has been replaced by a suite of granular, asynchronous tools designed for an AI agent to use.
+*   **Purpose**: Implements the complete Entity Disambiguation and Merging (EDM) pipeline. Its goal is to identify and resolve aliases in the extracted entities before they are added to the knowledge graph, ensuring data quality and consistency.
 
-*   **Exploration & Discovery**:
-    *   `aget_community_toc(level)`: Gets a "Table of Contents" of all communities at a given level. This is the agent's entry point for a high-level overview.
-    *   `afind_entities(query, top_k)`: Performs a semantic search for entities in the vector DB.
-*   **Drill-Down & Investigation**:
-    *   `aget_community_details(community_id)`: "Zooms in" on a single community, returning its full report and a list of its key entities and relationships.
-    *   `aget_entity_details(entity_name)`: Retrieves all stored data for a single entity.
-    *   `aget_relationships(entity_name)`: Fetches all relationships connected to a given entity.
-    *   `aget_source_text(entity_name)`: Traces an entity back to the original text chunk(s) it was extracted from.
-*   **Reasoning & Pathfinding**:
-    *   `afind_reasoning_path(start_entity, end_entity, ...)`: A powerful tool to find the shortest path between two entities. It intelligently abstracts over the graph backend (NetworkX or Neo4j) and the chosen algorithm (e.g., Dijkstra, Cypher SHORTEST).
-    *   `afind_multiple_reasoning_paths(...)`: Finds *k* different paths, allowing an agent to explore multiple lines of reasoning.
-    *   `afind_weighted_reasoning_path(...)`: Finds paths based on relationship weights, useful for considering relationship strength or cost.
-*   **Holistic Context**:
-    *   `aget_holistic_context(query, param)`: A high-level tool that runs a full hierarchical search and packages all the retrieved context (communities, entities, paths, source text) into a single, richly formatted string for the agent.
+*   **Key Classes & Functions**:
+    *   **`UnionFind`**: An efficient data structure used to group potential aliases into clusters during the candidate generation phase.
+    *   **`DisambiguationConfig`**: A dataclass holding all configuration parameters for the EDM process, such as similarity thresholds, concurrency limits, and batch sizes.
+    *   **`EntityDisambiguator`**: The main class that orchestrates the disambiguation process.
+        *   **`run(raw_nodes)`**: The main entry point. It executes the two-stage pipeline:
+            1.  **`_generate_candidates(raw_nodes)`**: This first stage finds potential aliases. It uses two passes: `_lexical_similarity_pass` (using `thefuzz` for string matching) and `_semantic_similarity_pass` (using cosine similarity on entity embeddings). The semantic pass is highly optimized to use a vector database (`entity_names_vdb`) for efficient nearest-neighbor searches, avoiding a slow N^2 comparison.
+            2.  **`_verify_candidates_with_llm(...)`**: This second stage takes the candidate clusters and sends each one to an LLM for a final judgment. It constructs a detailed prompt (`entity_disambiguation` from `prompt.py`) containing the entities' names, descriptions, and original source text. The LLM is asked to decide whether to "MERGE" or "DO_NOT_MERGE" and provide a justification. This function uses an `asyncio.Semaphore` for dynamic concurrency control.
+        *   **`_parse_and_validate_llm_decision(...)`**: A robust parser for the LLM's JSON output, ensuring the decision is well-formed and consistent with the input cluster before it is accepted.
+    *   **Configuration Helpers**: `create_disambiguation_config`, `validate_edm_configuration`, etc., provide utilities for managing and validating the EDM settings.
 
-#### **Quality Assurance**
+### `/hirag/_storage/` (Directory)
 
-*   `validate_knowledge_graph_quality()`: A comprehensive method to run a suite of checks on the graph's integrity, consistency, and quality.
-*   `generate_quality_report()`: Produces a human-readable markdown report based on the validation results.
+This directory contains the concrete implementations of the storage base classes defined in `base.py`.
 
-### `hirag/_op.py`: Core Data Processing Operations
+*   **`gdb_networkx.py`**: An in-memory graph storage implementation using the `networkx` library. It's simple and fast for smaller datasets. It loads/saves the graph to a `.graphml` file. It implements the `clustering` method using the `graspologic` library's Leiden algorithm.
+*   **`gdb_neo4j.py`**: A robust, persistent graph storage implementation for the Neo4j graph database. It translates HiRAG operations into Cypher queries. It features a comprehensive and powerful pathfinding implementation (`find_shortest_path`, `find_all_shortest_paths`, `find_k_shortest_paths`) that can leverage modern Cypher syntax, APOC procedures, and the Graph Data Science (GDS) library for advanced algorithms like Dijkstra and Yen's.
+*   **`kv_json.py`**: A basic key-value store that uses a single JSON file as its backend. Simple and portable, but not suitable for very large datasets.
+*   **`vdb_nanovectordb.py`**: A lightweight, file-based vector database implementation. It handles the creation of embeddings (by calling the configured `embedding_func`) and performs cosine similarity searches.
 
-This file contains the "verbs" of the HiRAG system—the functions that perform the actual work of transforming data.
+### `/hirag/_llm.py`
 
-*   **Extraction Logic**:
-    *   `_handle_single_entity_extraction` / `_handle_single_relationship_extraction`: These functions parse the structured string output from the LLM into Python dictionaries. They use the validation functions from `_validation.py`.
-    *   `extract_entities` / `extract_hierarchical_entities`: These are the main orchestrators for the extraction process. They iterate through text chunks, format the appropriate prompts (`hi_entity_extraction`, `hi_relation_extraction`), call the LLM, and aggregate the results. `extract_hierarchical_entities` adds the crucial step of calling the `Hierarchical_Clustering` logic.
-*   **Merging Logic**:
-    *   `_merge_nodes_then_upsert`: This function takes all instances of an entity that should be merged. It intelligently combines their `source_id`s, determines the most common `entity_type`, and calls `_handle_entity_relation_summary` to synthesize a new, coherent description from all the old ones.
-    *   `_merge_edges_then_upsert`: Similarly, this merges multiple instances of the same relationship, summing their weights and combining their descriptions.
-*   **Community Reporting Logic**:
-    *   `generate_community_report`: Orchestrates the creation of community reports. It iterates through the detected communities, level by level.
-    *   `_pack_single_community_describe`: A complex function that prepares the context for the `community_report` prompt. It pulls all nodes and edges for a community, formats them into CSV-like strings, and intelligently truncates them to fit within the LLM's token limit. Crucially, if the community is too large, it will use the reports of its *sub-communities* as a summarized context.
+*   **Purpose**: Provides standardized, asynchronous, and fault-tolerant wrappers for various LLM and embedding model APIs. It abstracts away the specific client libraries for OpenAI, Azure OpenAI, and Google Gemini.
 
-### `hirag/_cluster_utils.py`: Hierarchical Clustering
+*   **Key Functions**:
+    *   **`get_*_async_client_instance()`**: Singleton patterns to get or create API client instances.
+    *   **`openai_complete_if_cache`, `gemini_complete_if_cache`, `azure_openai_complete_if_cache`**: These are the core completion functions. They are wrapped with a `@retry` decorator from the `tenacity` library, which automatically retries API calls on specific transient errors (like `RateLimitError` or `APIConnectionError`) with exponential backoff. They also integrate with the `hashing_kv` (LLM cache) to avoid redundant API calls.
+    *   **Model-specific wrappers**: Functions like `gpt_4o_complete`, `gemini_pro_complete`, etc., are convenient shortcuts that call the underlying completion functions with the correct model name.
+    *   **Embedding functions**: `openai_embedding`, `gemini_embedding`, `azure_openai_embedding` are the corresponding functions for generating embeddings. They are decorated with `@wrap_embedding_func_with_attrs` to attach metadata like embedding dimension and max token size, which is used elsewhere in the system.
 
-This file implements the logic for building the "Hi" in HiRAG.
+### `/hirag/prompt.py`
 
-*   **`Hierarchical_Clustering.perform_clustering`**: This is the core method. It's an iterative process:
-    1.  It takes the embeddings of the current layer of entities.
-    2.  It uses UMAP (`global_cluster_embeddings`) to reduce the dimensionality of the embeddings, making clustering more effective.
-    3.  It applies a Gaussian Mixture Model (`GMM_cluster`) to find conceptual clusters of entities.
-    4.  For each resulting cluster, it packages the descriptions of the contained entities and sends them to an LLM using the `summary_clusters` prompt.
-    5.  The LLM's job is to synthesize one or more *new, higher-level* entities that abstract the theme of the cluster.
-    6.  These new entities, along with their own embeddings, become the input for the next layer of clustering.
-    7.  The process stops when clustering no longer yields significant improvements (measured by cluster sparsity).
+*   **Purpose**: A centralized repository for all LLM prompts used in the HiRAG pipeline. This separation of logic and prompts makes the system easier to maintain and customize.
 
-### `hirag/_disambiguation.py`: Entity Disambiguation & Merging (EDM)
+*   **Key Prompts**:
+    *   **`hi_entity_extraction`**: A highly detailed and complex prompt that instructs the LLM on how to extract entities. It includes strict rules about factual information, handling proofs, and the crucial distinction between 'temporary' and 'non-temporary' entities.
+    *   **`hi_relation_extraction`**: Instructs the LLM on how to find relationships between the entities extracted in the previous step.
+    *   **`summary_clusters`**: Used during hierarchical clustering to have the LLM synthesize a new, higher-level entity that summarizes a cluster of existing entities.
+    *   **`entity_disambiguation`**: The prompt used in the EDM pipeline. It presents a cluster of potential aliases to the LLM and asks for a structured JSON output with a "MERGE" or "DO_NOT_MERGE" decision, confidence score, and justification.
+    *   **`community_report`**: A detailed prompt that asks the LLM to act as a research analyst and write a structured JSON report about a community of entities, including a title, summary, importance rating, and detailed findings.
 
-This file contains the self-contained, robust pipeline for cleaning the knowledge graph.
+### Advanced Infrastructure Modules
 
-*   **`EntityDisambiguator` Class**: The main orchestrator for the EDM process.
-*   **`DisambiguationConfig`**: A dataclass to hold all configuration parameters for the pipeline.
-*   **`run(raw_nodes)`**: The main entry point, which executes a two-stage process:
-    1.  **Candidate Generation (`_generate_candidates`)**: This stage finds potential aliases without using an LLM. It uses a `UnionFind` data structure to efficiently group entities.
-        *   `_lexical_similarity_pass`: Uses fuzzy string matching (`thefuzz`) to find lexically similar names (e.g., "SYSTEM CL" vs "CL SYSTEM").
-        *   `_semantic_similarity_pass`: Uses the dedicated `entity_names_vdb` to perform fast vector searches, finding semantically similar names (e.g., "The theory of extensionality" vs "Extensionality property").
-    2.  **LLM Verification (`_verify_candidates_with_llm`)**: This stage takes the candidate clusters and verifies them.
-        *   For each cluster, `_verify_single_cluster` is called. It constructs a detailed prompt (`entity_disambiguation`) containing the names, types, descriptions, and—most importantly—the full original text context for each entity in the cluster.
-        *   The LLM is asked to make a "MERGE" or "DO_NOT_MERGE" decision and return it in a structured JSON format, including a confidence score and justification.
-        *   `_parse_and_validate_llm_decision` ensures the LLM's output is valid and adheres to the required format.
-*   The final output of the `run` method is a `name_to_canonical_map` dictionary, which is then used during graph upsertion.
+These modules provide the robust, cross-cutting concerns that make the HiRAG pipeline reliable and observable.
 
-### `hirag/_storage/`: Storage Backends
+*   **`/_checkpointing.py`**:
+    *   **Purpose**: To make the long-running ingestion process resumable. If the pipeline fails, it can be restarted and will continue from the last successfully completed stage.
+    *   **Key Classes**: `CheckpointStage` and `CheckpointStatus` (Enums), `StageCheckpoint` and `PipelineCheckpoint` (Dataclasses to hold state), and `CheckpointManager`.
+    *   **Workflow**: The `CheckpointManager` creates a unique session ID and saves the `PipelineCheckpoint` state to the KV store at the end of each stage (e.g., after `CHUNK_CREATION`, `ENTITY_EXTRACTION`). When HiRAG starts, it checks for a resumable session and, if found, determines which stage to resume from. It also tracks processed items (like chunk IDs) to avoid re-processing them on resume.
 
-This directory provides the concrete implementations for the storage interfaces defined in `base.py`.
+*   **`/_retry_manager.py`**:
+    *   **Purpose**: To handle transient errors (e.g., network issues, temporary API server errors) gracefully.
+    *   **Key Classes**: `FailureType` and `RetryStrategy` (Enums), `RetryConfig` (Dataclass), `CircuitBreaker`, and `RetryManager`.
+    *   **Workflow**: The `RetryManager` wraps LLM calls. If an error occurs, it uses `classify_failure` to categorize it (e.g., `RATE_LIMIT`, `SERVER_ERROR`). Based on the category, it determines if a retry is appropriate and calculates a delay using exponential backoff with jitter. It also implements a **Circuit Breaker** pattern: if a specific type of call fails repeatedly, the circuit "opens," and subsequent calls fail immediately for a "recovery timeout" period, preventing the system from overwhelming a failing service.
 
-*   **`gdb_networkx.py`**: An in-memory graph implementation using the popular `networkx` library. It's simple and fast for smaller graphs. It serializes the graph to a `.graphml` file. Clustering is performed using the `graspologic` library.
-*   **`gdb_neo4j.py`**: A robust, persistent graph implementation that connects to a Neo4j database.
-    *   **Pathfinding**: This is a standout feature. It provides multiple, highly optimized pathfinding methods (`find_shortest_path`, `find_all_shortest_paths`, `find_k_shortest_paths`) that leverage native Cypher queries and the Graph Data Science (GDS) library. It can use modern `SHORTEST` path syntax, APOC procedures for Dijkstra, or the full GDS library for Dijkstra and Yen's K-shortest paths. This makes it extremely powerful for reasoning tasks.
-    *   **Clustering**: It uses `gds.leiden.write` to perform clustering directly within the database.
-*   **`vdb_nanovectordb.py`**: A lightweight, file-based vector database. It's a simple dependency-free option for getting started.
-*   **`kv_json.py`**: A simple key-value store that uses a single JSON file as its backend.
+*   **`/_rate_limiting.py`**:
+    *   **Purpose**: To prevent the system from exceeding API rate limits (e.g., requests per minute, tokens per minute).
+    *   **Key Classes**: `RateLimitType` (Enum), `RateLimitConfig`, `ModelRateConfig`, `TokenBucket`, and `RateLimiter`.
+    *   **Workflow**: The `RateLimiter` uses the **Token Bucket algorithm**. For each model and limit type (e.g., `gpt-4o-mini_requests_per_minute`), it maintains a bucket of "tokens." Before an API call, the system must `acquire` permission, which checks if all relevant buckets have enough tokens. If not, it waits asynchronously until the buckets are refilled over time. This smooths out bursts of requests and ensures compliance with API limits. It also supports adaptive backpressure.
 
-### `hirag/prompt.py`: The Brain of the System
+*   **`/_token_estimation.py`**:
+    *   **Purpose**: To predict the token usage and monetary cost of a pipeline run *before* it starts.
+    *   **Key Classes**: `LLMCallType` (Enum), `TokenEstimate` and `PipelineEstimate` (Dataclasses), `ModelPricing`, and `TokenEstimator`.
+    *   **Workflow**: The `TokenEstimator` analyzes the input documents and the pipeline configuration. It calculates the number of chunks and then iterates through each stage of the pipeline, creating a `TokenEstimate` for every anticipated LLM call. It does this by combining fixed token counts from prompt templates with dynamic estimates for variable content (e.g., estimating that a 1200-token chunk will yield ~5 entities). The final `PipelineEstimate` provides a detailed breakdown of expected token usage and cost.
 
-This file is arguably the most critical for the quality of the system's output. It contains all the prompts used to instruct the LLMs.
+*   **`/_estimation_db.py`**:
+    *   **Purpose**: To improve the accuracy of the `TokenEstimator` over time.
+    *   **Key Classes**: `UsageRecord`, `UsageStatistics`, `EstimationDatabase`.
+    *   **Workflow**: After an actual LLM call, the system can record the *actual* token usage to the `EstimationDatabase`. Over time, the `TokenEstimator` can analyze this historical data to learn and refine its internal parameters (e.g., it might learn that for a specific type of document, a chunk yields 7 entities on average, not 5), making future estimates more accurate.
 
-*   **`hi_entity_extraction`**: A highly detailed and rule-intensive prompt for extracting entities. It strictly defines the entity types (`postulate`, `object`, `concept`, `property`, `proof`) and the crucial `is_temporary` flag, providing examples for each. It includes strict rules about what *not* to extract (e.g., editorial comments, content from within proofs).
-*   **`hi_relation_extraction`**: The corresponding prompt for extracting relationships between the entities found by the previous prompt.
-*   **`summary_clusters`**: The prompt used during hierarchical clustering. It instructs the LLM to act as a "knowledge architect," synthesizing new, higher-level attribute entities that abstract a cluster of concepts.
-*   **`summarize_entity_descriptions`**: The prompt used when merging nodes. It instructs the LLM to synthesize a single, coherent description from a list of descriptions for the same entity.
-*   **`community_report`**: A prompt that instructs the LLM to act as a research analyst. It asks for a structured JSON output containing a title, summary, importance rating, and detailed findings for a given community.
-*   **`entity_disambiguation`**: The prompt for the EDM verification step. It provides the LLM with the candidate cluster and the full text context, asking for a structured JSON decision (`MERGE` or `DO_NOT_MERGE`) with justification and a confidence score.
+*   **`/_progress_tracking.py`**:
+    *   **Purpose**: To provide real-time monitoring of the ingestion pipeline.
+    *   **Key Classes**: `DashboardType` (Enum), `ProgressMetrics`, `LiveStatistics`, and `ProgressTracker`.
+    *   **Workflow**: The `ProgressTracker` runs in a background asyncio task. It collects metrics from all other infrastructure components (checkpoints, retries, rate limits) and aggregates them. If `rich` is installed, it displays a live, updating terminal dashboard with progress bars, ETA, token usage, and error statistics. This gives the user a clear view into the pipeline's status.
 
-### Utility Files
+---
 
-*   **`_llm.py`**: Provides standardized, asynchronous functions (`openai_complete_if_cache`, `gemini_complete_if_cache`, etc.) for interacting with different LLM APIs. It handles caching, retries on failure (`tenacity`), and API-specific formatting.
-*   **`_utils.py`**: Contains essential helper functions, including `compute_mdhash_id` for creating deterministic IDs, `clean_str` for sanitizing text, JSON parsing helpers, and the `limit_async_func_call` decorator for rate limiting.
-*   **`_validation.py`**: Centralizes validation logic (e.g., `_validate_entity_record_attributes`) to ensure that data parsed from LLM outputs conforms to the expected structure before being processed further.
-*   **`_splitter.py`**: Contains the `SeparatorSplitter`, a sophisticated text splitter that can handle token-based splitting with overlap, respecting a list of separator sequences.
+## Core Workflows
 
-## 5. Agentic Workflow in Practice
+### 1. Indexing Workflow (`ainsert`)
 
-With the new toolkit, an agent's interaction with HiRAG becomes a dynamic, multi-step reasoning process.
+This is the step-by-step journey of a document through the HiRAG pipeline.
 
-**Scenario**: A user asks, "How does the concept of a weak Cartesian closed category (wCCC) relate to typed λ-calculus?"
+1.  **Start & Checkpoint**: `ainsert` is called. The `CheckpointManager` is checked for a resumable session. If none, a new session is started.
+2.  **Document Ingestion**: Input strings are hashed to create unique document IDs and stored in the `full_docs` KV store.
+3.  **Chunking**: `get_chunks` is called. The documents are split into `TextChunkSchema` objects based on the configured token size and overlap. These are stored in the `text_chunks` KV store.
+4.  **Token Estimation (Optional)**: Before starting, the `TokenEstimator` can be used to predict the cost and duration of the run.
+5.  **Progress Tracking Start**: The `ProgressTracker` starts, displaying the dashboard.
+6.  **Hierarchical Extraction**: `extract_hierarchical_entities` is called. It iterates through each new chunk.
+    *   For each chunk, an LLM call is made using the `hi_entity_extraction` prompt.
+    *   The call is managed by the `RateLimiter` (waits if necessary) and `RetryManager` (retries on failure).
+    *   The LLM response is parsed to get a list of raw entity and relationship dictionaries.
+    *   This process may loop with "gleaning" prompts to ensure all information is extracted.
+    *   The function gathers all raw nodes and edges from all chunks.
+7.  **Entity Disambiguation**: The collected `raw_nodes` are passed to `EntityDisambiguator.run()`.
+    *   **Candidate Generation**: `UnionFind` is used to cluster entities based on high lexical (`thefuzz`) and semantic (vector search on `entity_names_vdb`) similarity.
+    *   **LLM Verification**: Each candidate cluster is sent to the LLM with the `entity_disambiguation` prompt for a final MERGE/DO_NOT_MERGE decision.
+    *   The result is a `name_to_canonical_map` dictionary.
+8.  **Graph Upsertion**: `_upsert_disambiguated_graph` is called.
+    *   It iterates through the raw nodes and edges, replacing alias names with their canonical names from the map.
+    *   It groups all instances of the same canonical entity/relationship together.
+    *   `_merge_nodes_then_upsert` and `_merge_edges_then_upsert` are called to combine the data and write it to the configured graph storage (`NetworkX` or `Neo4j`).
+    *   Canonical entities are also upserted into the `entities_vdb` for semantic search.
+9.  **Clustering**: The `clustering` method on the graph storage object is called. This runs an algorithm (e.g., Leiden) to partition the graph into communities. The community ID for each node is stored as a node property.
+10. **Community Reporting**: `generate_community_report` is called.
+    *   It reads the community structure from the graph.
+    *   For each community, it packs its entities and relationships into a context string.
+    *   It calls the LLM with the `community_report` prompt to generate a JSON summary.
+    *   The final reports are saved to the `community_reports` KV store.
+11. **Finalization**: All storage backends commit their changes (`index_done_callback`). The checkpoint is marked as `COMPLETED`. The progress tracker stops.
 
-**Agent's Thought Process & Actions**:
+### 2. Querying Workflow (Agent Toolkit)
 
-1.  **Initial Exploration**: "I need to understand the high-level concepts in the knowledge base. I'll start with the Table of Contents."
-    *   **Action**: `hirag.aget_community_toc(level=0)`
-    *   **Result**: A list of top-level communities. The agent sees a title like "Weak Cartesian Closed Categories (wCCCs) as a Model for Typed Combinatory Logic".
+This workflow describes how an intelligent agent uses the HiRAG toolkit to answer a complex question, such as "How does the concept of a Weak Cartesian Closed Category (wCCC) relate to the λβp' calculus?"
 
-2.  **Drill-Down**: "That community seems highly relevant. I'll get the detailed report for it."
-    *   **Action**: `hirag.aget_community_details(community_id="...")`
-    *   **Result**: A detailed markdown report, including the summary, key findings, and lists of important entities like "WCCC", "TYPED COMBINATORY LOGIC", "(β_nat) EQUATION", and "RETRACTION".
+1.  **High-Level Overview**: The agent first wants to understand the main topics in the knowledge base. It calls `aget_community_toc(level=0)`. This returns a list of top-level community summaries. The agent sees a community titled "Weak Cartesian Closed Categories (wCCCs) as a Model for Typed Combinatory Logic" and identifies it as relevant.
 
-3.  **Entity Investigation**: "The report mentions 'RETRACTION' is a key consequence. I need to understand exactly what that is and how it's connected."
-    *   **Action 1**: `hirag.aget_entity_details("RETRACTION")` -> Gets the full, synthesized description of the 'retraction' concept.
-    *   **Action 2**: `hirag.aget_relationships("WEAK CARTESIAN CLOSED CATEGORY (WCCC)")` -> Gets all relationships for WCCC, confirming the one to "RETRACTION" and its description.
-    *   **Action 3**: `hirag.aget_source_text("RETRACTION")` -> Pulls the original text where 'retraction' was defined, providing ground-truth context.
+2.  **Zooming In**: The agent decides to investigate this community further. It calls `aget_community_details(community_id=...)`. This returns the full report for that community, along with a list of its key entities and relationships. The agent sees "WCCL (FORMAL THEORY OF WCCC)" and "λβp' (TYPED λβ-CALCULUS WITH SURJECTIVE PAIRING)" listed as key entities.
 
-4.  **Reasoning Path**: "The user asked about the relationship to 'typed λ-calculus'. I see 'TYPED COMBINATORY LOGIC' in the community. Let me find the reasoning path between 'WCCC' and 'TYPED COMBINATORY LOGIC' to build a logical argument."
-    *   **Action**: `hirag.afind_reasoning_path("WEAK CARTESIAN CLOSED CATEGORY (WCCC)", "TYPED COMBINATORY LOGIC")`
-    *   **Result**: A path showing the nodes and edges connecting the two concepts, likely highlighting that WCCCs provide the categorical semantics for the logic.
+3.  **Entity Exploration**: The agent now wants to understand these two entities in detail.
+    *   It calls `aget_entity_details(entity_name="WCCL (FORMAL THEORY OF WCCC)")`.
+    *   It calls `aget_entity_details(entity_name="λβp' (TYPED λβ-CALCULUS WITH SURJECTIVE PAIRING)")`.
+    *   These calls return the full, merged descriptions of each entity.
 
-5.  **Answer Synthesis**: The agent now has a wealth of structured context: the high-level community summary, detailed definitions of key entities, the specific relationships connecting them, the original source text for verification, and a logical path. It can now synthesize a comprehensive, accurate, and well-supported answer for the user, referencing all the evidence it has gathered.
+4.  **Finding the Connection**: The agent's primary goal is to find the relationship between them. It calls `afind_reasoning_path(start_entity="WCCL (FORMAL THEORY OF WCCC)", end_entity="λβp' (TYPED λβ-CALCULUS WITH SURJECTIVE PAIRING)")`.
+    *   The system queries the graph database (`Neo4j` or `NetworkX`) to find the shortest path.
+    *   It returns a path object containing the nodes and edges connecting the two entities. The agent discovers a direct edge with the description: "Are proven to be equivalent formal systems, connected via equality-preserving translations."
 
-## 6. Conclusion
+5.  **Gathering Evidence**: The agent now has a direct claim but wants the original proof or definition. For both the "WCCL" and "λβp'" entities, it calls `aget_source_text(entity_name=...)`. This retrieves the original text chunks where these entities were defined.
 
-The HiRAG codebase represents a significant evolution in Retrieval-Augmented Generation. By prioritizing the creation of a structured, hierarchical, and clean knowledge graph, it moves beyond simple semantic search. The true power of the system is unlocked through its agentic toolkit, which transforms the RAG process from a monolithic query-answer flow into a dynamic, exploratory reasoning dialogue. As developers and agents, you are now equipped not just with a tool to find information, but with a structured universe of knowledge to explore and reason over.
+6.  **Synthesis**: The agent now has all the necessary information: the high-level summary, the detailed entity definitions, the direct relationship connecting them, and the original source text. It can now synthesize a comprehensive, accurate, and fully cited answer to the original question and present it to the user.
+
+---
+
+## Conclusion and Developer Guide
+
+The HiRAG codebase represents a powerful and flexible framework for building advanced knowledge graphs. Its modular architecture, pluggable storage, and robust infrastructure make it a solid foundation for complex information retrieval and agentic systems.
