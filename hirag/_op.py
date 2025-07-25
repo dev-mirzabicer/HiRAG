@@ -642,7 +642,7 @@ async def extract_hierarchical_entities(
         if "embedding" not in representative:
             try:
                 description = representative.get("description", entity_name)
-                embedding_result = await entity_vdb.embedding_func([description])
+                embedding_result = await self.embedding_func([description])
                 representative["embedding"] = embedding_result[0] if embedding_result else None
             except Exception as e:
                 logger.warning(f"Failed to generate embedding for entity '{entity_name}': {e}")
