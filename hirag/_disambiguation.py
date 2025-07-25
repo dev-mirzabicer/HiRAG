@@ -755,7 +755,7 @@ def log_disambiguation_statistics(
     
     logger_instance.info(f"Disambiguation Statistics:")
     logger_instance.info(f"  Total entities: {total_entities}")
-    logger_instance.info(f"  Non-temporary entities: {non_temporary_entities}")
+    logger_instance.info(f"  Non-temporary entities: {non_temporary_count}")
     logger_instance.info(f"  Entities merged: {stats['entities_merged']}")
     logger_instance.info(f"  Final canonical entities: {total_canonical}")
     logger_instance.info(f"  Compression ratio: {compression_ratio:.2%}")
