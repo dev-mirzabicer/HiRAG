@@ -6,7 +6,7 @@ import networkx as nx
 import time
 import logging
 from contextlib import contextmanager
-from typing import Union
+from typing import Union, Tuple, List, Dict, Optional
 from collections import Counter, defaultdict
 from ._splitter import SeparatorSplitter
 from ._utils import (
@@ -335,8 +335,12 @@ async def extract_hierarchical_entities(
     knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
     global_config: dict,
-) -> Union[BaseGraphStorage, None]:
+    entity_names_vdb: Optional[BaseVectorStorage] = None,
+) -> Tuple[List[Dict], List[Dict]]:
     """Extract entities and relations from text chunks
+    
+    This modified version ensures all entities have embeddings and returns raw data
+    for the Entity Disambiguation and Merging (EDM) pipeline.
 
     Args:
         chunks: text chunks
@@ -345,7 +349,7 @@ async def extract_hierarchical_entities(
         global_config: global configuration
 
     Returns:
-        Union[BaseGraphStorage, None]: knowledge graph instance
+        Tuple[List[Dict], List[Dict]]: (raw_nodes, raw_edges) with embeddings
     """
     use_llm_func: callable = global_config["best_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -469,7 +473,7 @@ async def extract_hierarchical_entities(
         key[0]: list(x[0].keys()) for key, x in zip(ordered_chunks, entity_results)
     }
 
-    # fetch embeddings
+    # fetch embeddings for base entities
     entity_discriptions = [v["description"] for k, v in all_entities.items()]
     entity_sequence_embeddings = []
     embeddings_batch_size = 64
@@ -577,7 +581,7 @@ async def extract_hierarchical_entities(
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
-    # extract entities
+    # extract relations
     # use_llm_func is wrapped in ascynio.Semaphore, limiting max_async callings
     relation_results = await asyncio.gather(
         *[_process_single_content_relation(c) for c in ordered_chunks]
@@ -607,53 +611,83 @@ async def extract_hierarchical_entities(
         for y in hierarchical_clustered_entities_relations
     ]
 
+    # Collect all raw nodes and edges
     maybe_nodes = defaultdict(list)  # for all chunks
     maybe_edges = defaultdict(list)
-    # extracted entities and relations
+    
+    # Base extracted entities and relations
     for m_nodes, m_edges in zip(entity_results, relation_results):
         for k, v in m_nodes[0].items():
             maybe_nodes[k].extend(v)
         for k, v in m_edges[1].items():
             # it's undirected graph
             maybe_edges[tuple(sorted(k))].extend(v)
-    # clustered entities
+    
+    # Hierarchical clustered entities
     for cluster_layer in hierarchical_clustered_entities:
         for item in cluster_layer:
             maybe_nodes[item["entity_name"]].extend([item])
-    # clustered relations
+    
+    # Hierarchical clustered relations
     for cluster_layer in hierarchical_clustered_relations:
         for item in cluster_layer:
             maybe_edges[tuple(sorted((item["src_id"], item["tgt_id"])))].extend([item])
-    # store the nodes
-    all_entities_data = await asyncio.gather(
-        *[
-            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-            for k, v in maybe_nodes.items()
-        ]
-    )
-    # store the edges
-    await asyncio.gather(
-        *[
-            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
-            for k, v in maybe_edges.items()
-        ]
-    )
-    if not len(all_entities_data):
-        logger.warning("Didn't extract any entities, maybe your LLM is not working")
-        return None
-    if entity_vdb is not None:
-        data_for_vdb = {  # key is the md5 hash of the entity name string
-            compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                "content": dp["entity_name"]
-                + dp[
-                    "description"
-                ],  # entity name and description construct the content
-                "entity_name": dp["entity_name"],
-            }
-            for dp in all_entities_data
-        }
-        await entity_vdb.upsert(data_for_vdb)
-    return knowledge_graph_inst
+
+    # Convert to lists for disambiguation
+    raw_nodes = []
+    for entity_name, entity_instances in maybe_nodes.items():
+        # Take the first instance as representative and ensure it has embeddings
+        representative = entity_instances[0].copy()
+        
+        # Ensure embedding exists
+        if "embedding" not in representative:
+            try:
+                description = representative.get("description", entity_name)
+                embedding_result = await self.embedding_func([description])
+                representative["embedding"] = embedding_result[0] if embedding_result else None
+            except Exception as e:
+                logger.warning(f"Failed to generate embedding for entity '{entity_name}': {e}")
+                representative["embedding"] = None
+        
+        raw_nodes.append(representative)
+
+    raw_edges = []
+    for edge_key, edge_instances in maybe_edges.items():
+        # Take the first instance as representative
+        representative = edge_instances[0].copy()
+        raw_edges.append(representative)
+
+    logger.info(f"Extracted {len(raw_nodes)} unique entities and {len(raw_edges)} unique relations for disambiguation")
+    
+    # Store entity names in dedicated vector database for efficient disambiguation
+    if entity_names_vdb is not None and raw_nodes:
+        try:
+            logger.info(f"Storing {len(raw_nodes)} entity names in vector database for disambiguation")
+            
+            # Prepare data for entity names vector database
+            entity_name_data = {}
+            for node in raw_nodes:
+                entity_name = node.get("entity_name", "")
+                if entity_name and node.get("embedding") is not None:
+                    # Store just the entity name (not the full description) for efficient name-based search
+                    entity_name_data[entity_name] = {
+                        "content": entity_name,  # Store the name itself as content
+                        "entity_name": entity_name,
+                        "entity_type": node.get("entity_type", ""),
+                        "is_temporary": node.get("is_temporary", False),
+                    }
+            
+            if entity_name_data:
+                await entity_names_vdb.upsert(entity_name_data)
+                logger.info(f"Successfully stored {len(entity_name_data)} entity names in vector database")
+            else:
+                logger.warning("No valid entity names to store in vector database")
+                
+        except Exception as e:
+            logger.error(f"Failed to store entity names in vector database: {e}")
+            # Don't fail the entire extraction process if name storage fails
+    
+    return raw_nodes, raw_edges
 
 
 async def extract_entities(

@@ -532,3 +532,52 @@ PROMPTS["META_ENTITY_TYPES"] = [
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "<|RECORD|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
+
+# --- Entity Disambiguation Prompt ---
+PROMPTS["entity_disambiguation"] = """
+You are a meticulous knowledge graph curator and an expert in Combinatory Logic. Your task is to perform entity disambiguation. You will be given a cluster of entities that are suspected to be aliases for the same underlying concept. Your job is to analyze the provided evidence and make a definitive judgment.
+
+# Goal
+Determine if the entities in the provided list are aliases for one another. If they are, you must select the best canonical name. If they are not, you must state that they should not be merged.
+
+# Rules of Judgment
+1.  **Identity vs. Similarity**: Do not merge entities that are merely similar. Merge only if you are highly confident they refer to the exact same concept, postulate, or object. Subtle differences in definitions matter.
+2.  **Context is Ground Truth**: The `original_text_context` is the most important piece of evidence. An entity's meaning is defined by its use in the source document. Your justification MUST reference specific phrases from this context.
+3.  **Be Conservative**: If there is any ambiguity or insufficient evidence to prove the entities are identical, you MUST decide "DO_NOT_MERGE". It is better to leave two aliases separate than to incorrectly merge two distinct concepts.
+4.  **Canonical Name Selection**: If you decide to merge, the canonical name should be the most precise and commonly used term. Prefer formal, shorter names (e.g., "CL_η") over descriptive, longer ones (e.g., "The theory CL_η").
+
+# Input Data
+You will be provided with a JSON list of candidate entities. Each entity object has the following structure:
+{{
+  "entity_name": "The name extracted for this entity.",
+  "entity_description": "The description generated for this entity.",
+  "entity_type": "The type of entity (postulate, object, concept, property, proof).",
+  "original_text_context": "The full text chunk from which this entity was extracted."
+}}
+
+# Output Format
+You MUST respond with a single, well-formed JSON object with the following structure. Do not add any text outside of this JSON object.
+
+- For a MERGE decision:
+{{
+  "decision": "MERGE",
+  "canonical_name": "<The chosen canonical name>",
+  "aliases": ["<list of other names to be merged>"],
+  "confidence_score": <A float from 0.0 to 1.0 indicating your confidence in this decision>,
+  "justification": "A detailed explanation for why these entities are identical, referencing specific evidence from the provided context."
+}}
+
+- For a DO_NOT_MERGE decision:
+{{
+  "decision": "DO_NOT_MERGE",
+  "confidence_score": <A float from 0.0 to 1.0 indicating your confidence in this decision>,
+  "justification": "A detailed explanation of the subtle differences that prevent these entities from being merged, referencing specific evidence from the provided context."
+}}
+
+# Real Data
+
+Candidate Cluster:
+{input_json_for_cluster}
+
+# Your Decision:
+"""
