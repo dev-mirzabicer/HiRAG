@@ -351,6 +351,7 @@ async def extract_hierarchical_entities(
     entity_vdb: BaseVectorStorage,
     global_config: dict,
     entity_names_vdb: Optional[BaseVectorStorage] = None,
+    token_estimator = None,  # Add token estimator parameter
 ) -> Tuple[List[Dict], List[Dict]]:
     """Extract entities and relations from text chunks
     
@@ -362,12 +363,23 @@ async def extract_hierarchical_entities(
         knowledge_graph_inst: knowledge graph instance
         entity_vdb: entity vector database
         global_config: global configuration
+        entity_names_vdb: optional entity names vector database for disambiguation
+        token_estimator: optional token estimator for learning
 
     Returns:
         Tuple[List[Dict], List[Dict]]: (raw_nodes, raw_edges) with embeddings
     """
     use_llm_func: callable = global_config["best_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+
+    # Import instrumentation helper
+    if token_estimator:
+        try:
+            from ._llm import record_llm_usage_with_context
+            from ._token_estimation import LLMCallType
+        except ImportError:
+            logger.warning("Could not import LLM instrumentation, proceeding without recording")
+            token_estimator = None
 
     ordered_chunks = list(chunks.items())
     entity_extract_prompt = PROMPTS[
@@ -402,13 +414,42 @@ async def extract_hierarchical_entities(
         hint_prompt = entity_extract_prompt.format(
             **context_base_entity, input_text=content
         )  # fill in the parameter
+        
+        # Record LLM usage for entity extraction
         final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
+        if token_estimator:
+            await record_llm_usage_with_context(
+                token_estimator=token_estimator,
+                call_type=LLMCallType.ENTITY_EXTRACTION,
+                actual_response=final_result,
+                chunk_content=content,
+                chunk_size=len(content.split()),
+                document_type="general",  # Could be enhanced with detection
+                model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                success=True,
+                metadata={"chunk_key": chunk_key, "stage": "initial_extraction"}
+            )
 
         history = pack_user_ass_to_openai_messages(
             hint_prompt, final_result
         )  # set as history
+        
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
+            
+            # Record gleaning LLM usage
+            if token_estimator:
+                await record_llm_usage_with_context(
+                    token_estimator=token_estimator,
+                    call_type=LLMCallType.CONTINUE_EXTRACTION,
+                    actual_response=glean_result,
+                    chunk_content=content,
+                    chunk_size=len(content.split()),
+                    document_type="general",
+                    model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                    success=True,
+                    metadata={"chunk_key": chunk_key, "gleaning_iteration": now_glean_index}
+                )
 
             history += pack_user_ass_to_openai_messages(
                 continue_prompt, glean_result
@@ -422,6 +463,21 @@ async def extract_hierarchical_entities(
                     if_loop_prompt, history_messages=history
                 )
             )
+            
+            # Record loop detection LLM usage
+            if token_estimator:
+                await record_llm_usage_with_context(
+                    token_estimator=token_estimator,
+                    call_type=LLMCallType.LOOP_DETECTION,
+                    actual_response=if_loop_result,
+                    chunk_content=content,
+                    chunk_size=len(content.split()),
+                    document_type="general",
+                    model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                    success=True,
+                    metadata={"chunk_key": chunk_key, "gleaning_iteration": now_glean_index}
+                )
+            
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
@@ -529,13 +585,41 @@ async def extract_hierarchical_entities(
         hint_prompt = relation_extract_prompt.format(
             **context_base_relation, input_text=content
         )  # fill in the parameter
+        
+        # Record LLM usage for relation extraction
         final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
+        if token_estimator:
+            await record_llm_usage_with_context(
+                token_estimator=token_estimator,
+                call_type=LLMCallType.RELATION_EXTRACTION,
+                actual_response=final_result,
+                chunk_content=content,
+                chunk_size=len(content.split()),
+                document_type="general",
+                model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                success=True,
+                metadata={"chunk_key": chunk_key, "entities_count": len(entities)}
+            )
 
         history = pack_user_ass_to_openai_messages(
             hint_prompt, final_result
         )  # set as history
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
+            
+            # Record relation gleaning LLM usage
+            if token_estimator:
+                await record_llm_usage_with_context(
+                    token_estimator=token_estimator,
+                    call_type=LLMCallType.CONTINUE_EXTRACTION,
+                    actual_response=glean_result,
+                    chunk_content=content,
+                    chunk_size=len(content.split()),
+                    document_type="general",
+                    model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                    success=True,
+                    metadata={"chunk_key": chunk_key, "stage": "relation_gleaning", "gleaning_iteration": now_glean_index}
+                )
 
             history += pack_user_ass_to_openai_messages(
                 continue_prompt, glean_result
@@ -549,6 +633,21 @@ async def extract_hierarchical_entities(
                     if_loop_prompt, history_messages=history
                 )
             )
+            
+            # Record relation loop detection LLM usage
+            if token_estimator:
+                await record_llm_usage_with_context(
+                    token_estimator=token_estimator,
+                    call_type=LLMCallType.LOOP_DETECTION,
+                    actual_response=if_loop_result,
+                    chunk_content=content,
+                    chunk_size=len(content.split()),
+                    document_type="general",
+                    model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                    success=True,
+                    metadata={"chunk_key": chunk_key, "stage": "relation_loop_detection", "gleaning_iteration": now_glean_index}
+                )
+            
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
@@ -616,7 +715,10 @@ async def extract_hierarchical_entities(
     hierarchical_cluster = Hierarchical_Clustering()
     hierarchical_clustered_entities_relations = (
         await hierarchical_cluster.perform_clustering(
-            entity_vdb=entity_vdb, global_config=global_config, entities=all_entities
+            entity_vdb=entity_vdb, 
+            global_config=global_config, 
+            entities=all_entities,
+            token_estimator=token_estimator  # Pass token estimator to clustering
         )
     )
     hierarchical_clustered_entities = [
@@ -660,7 +762,7 @@ async def extract_hierarchical_entities(
         if "embedding" not in representative:
             try:
                 description = representative.get("description", entity_name)
-                embedding_result = await self.embedding_func([description])
+                embedding_result = await entity_vdb.embedding_func([description])
                 representative["embedding"] = embedding_result[0] if embedding_result else None
             except Exception as e:
                 logger.warning(f"Failed to generate embedding for entity '{entity_name}': {e}")
@@ -1037,12 +1139,24 @@ async def generate_community_report(
     community_report_kv: BaseKVStorage[CommunitySchema],
     knwoledge_graph_inst: BaseGraphStorage,
     global_config: dict,
+    token_estimator = None,  # Add token estimator parameter
 ):
+    """Generate community reports with optional LLM usage recording"""
+    
     llm_extra_kwargs = global_config["special_community_report_llm_kwargs"]
     use_llm_func: callable = global_config["best_model_func"]
     use_string_json_convert_func: callable = global_config[
         "convert_response_to_json_func"
     ]
+
+    # Import instrumentation helper
+    if token_estimator:
+        try:
+            from ._llm import record_llm_usage_with_context
+            from ._token_estimation import LLMCallType
+        except ImportError:
+            logger.warning("Could not import LLM instrumentation, proceeding without recording")
+            token_estimator = None
 
     community_report_prompt = PROMPTS["community_report"]
 
@@ -1065,7 +1179,31 @@ async def generate_community_report(
             global_config=global_config,
         )
         prompt = community_report_prompt.format(input_text=describe)
+        
+        # Record LLM usage for community report generation
         response = await use_llm_func(prompt, **llm_extra_kwargs)
+        if token_estimator:
+            # Calculate community size for context
+            community_size = len(community.get("nodes", [])) + len(community.get("edges", []))
+            
+            await record_llm_usage_with_context(
+                token_estimator=token_estimator,
+                call_type=LLMCallType.COMMUNITY_REPORT,
+                actual_response=response,
+                chunk_content=describe,  # Use the community description as content
+                chunk_size=len(describe.split()),
+                document_type="general",
+                model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                success=True,
+                metadata={
+                    "community_id": community.get("id", "unknown"),
+                    "community_level": community.get("level", 0),
+                    "community_size": community_size,
+                    "nodes_count": len(community.get("nodes", [])),
+                    "edges_count": len(community.get("edges", [])),
+                }
+            )
+        
         data = use_string_json_convert_func(response)
         already_processed += 1
         now_ticks = PROMPTS["process_tickers"][

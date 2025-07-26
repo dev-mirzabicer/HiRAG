@@ -456,19 +456,7 @@ class HiRAG:
                 else None
             )
 
-        # Initialize Token Estimation System
-        self.token_estimator = None
-        if self.enable_token_estimation:
-            try:
-                self.token_estimator = create_token_estimator(
-                    global_config=asdict(self), estimation_db=self.estimation_db_storage
-                )
-                logger.info("Token estimation system initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize token estimation system: {e}")
-                self.enable_token_estimation = False
-
-        # Initialize Estimation Database
+        # Initialize Estimation Database FIRST (needed for token estimator)
         self.estimation_database = None
         if self.enable_estimation_learning and self.estimation_db_storage:
             try:
@@ -477,10 +465,31 @@ class HiRAG:
                     max_records=self.estimation_db_max_records,
                     cleanup_days=self.estimation_db_cleanup_days,
                 )
-                logger.info("Estimation database initialized")
+                logger.info("Enhanced estimation database with parameter learning initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize estimation database: {e}")
                 self.enable_estimation_learning = False
+
+        # Initialize Enhanced Token Estimation System with Learnable Parameters
+        self.token_estimator = None
+        if self.enable_token_estimation:
+            try:
+                self.token_estimator = create_token_estimator(
+                    global_config=asdict(self), estimation_db=self.estimation_db_storage
+                )
+                logger.info("Enhanced token estimation system with learnable parameters initialized")
+                
+                # Log the learnable parameter system status
+                if self.token_estimator.parameter_manager and self.token_estimator.learning_engine:
+                    total_params = len(self.token_estimator.parameter_manager.get_all_parameters())
+                    logger.info(f"Learnable parameter system active with {total_params} parameters")
+                    logger.info("System will learn and adapt from actual LLM usage data")
+                else:
+                    logger.warning("Learnable parameter system not fully initialized")
+                    
+            except Exception as e:
+                logger.error(f"Failed to initialize enhanced token estimation system: {e}")
+                self.enable_token_estimation = False
 
         # Initialize Checkpointing System
         self.checkpoint_manager = None
@@ -566,10 +575,42 @@ class HiRAG:
                 logger.error(f"Failed to initialize progress tracking system: {e}")
                 self.enable_progress_tracking = False
 
-        # Wrap LLM functions with new systems
-        self._wrap_llm_functions()
+        # Wrap LLM functions with new systems and instrumentation
+        self._wrap_llm_functions_with_instrumentation()
 
         logger.info("Advanced pipeline infrastructure initialization completed")
+
+    def _wrap_llm_functions_with_instrumentation(self):
+        """Wrap LLM functions with instrumentation and advanced systems"""
+        logger.info("Wrapping LLM functions with instrumentation...")
+        
+        # First apply the existing wrapping logic
+        if hasattr(self, '_wrap_llm_functions'):
+            self._wrap_llm_functions()
+        
+        # Add automatic usage recording if token estimator is available
+        if self.token_estimator and self.enable_estimation_learning:
+            try:
+                # Import the instrumentation system
+                from ._token_estimation import LLMInstrumentationManager, LLMCallType
+                
+                # Create instrumentation manager
+                self.llm_instrumentation_manager = LLMInstrumentationManager(self.token_estimator)
+                
+                # Define LLM function mappings for instrumentation
+                # We'll instrument the model functions used throughout the pipeline
+                function_mappings = {}
+                
+                # Map model functions to their call types based on usage context
+                # Note: These will be context-dependent, so we'll use a more sophisticated approach
+                # in the _llm.py and _op.py integration
+                
+                logger.info("LLM function instrumentation manager initialized")
+                logger.info("Automatic usage recording will be applied at operation level")
+                
+            except Exception as e:
+                logger.error(f"Failed to initialize LLM instrumentation: {e}")
+                self.llm_instrumentation_manager = None
 
     def _wrap_llm_functions(self):
         """Wrap LLM functions with retry and rate limiting"""
@@ -828,6 +869,7 @@ class HiRAG:
                         entity_vdb=self.entities_vdb,
                         global_config=asdict(self),
                         entity_names_vdb=self.entity_names_vdb,
+                        token_estimator=self.token_estimator,  # Pass token estimator for learning
                     )
 
                     if not raw_nodes:
@@ -970,6 +1012,7 @@ class HiRAG:
                     self.community_reports,
                     self.chunk_entity_relation_graph,
                     asdict(self),
+                    token_estimator=self.token_estimator,  # Pass token estimator for learning
                 )
                 processing_state["community_reports_generated"] = True
 

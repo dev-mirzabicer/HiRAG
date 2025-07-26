@@ -237,6 +237,7 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
         entity_vdb: BaseVectorStorage,
         global_config: dict,
         entities: dict,
+        token_estimator = None,  # Add token estimator parameter
         layers: Optional[int] = None,
         max_length_in_cluster: Optional[int] = None,
         tokenizer=tiktoken.get_encoding("cl100k_base"),
@@ -338,6 +339,32 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                 summarize_prompt = PROMPTS["summary_clusters"]
                 hint_prompt = summarize_prompt.format(**context_base_summarize)
                 summarize_result = await use_llm_func(hint_prompt)
+                
+                # Record LLM usage for hierarchical clustering
+                if token_estimator:
+                    try:
+                        from ._llm import record_llm_usage_with_context
+                        from ._token_estimation import LLMCallType
+                        
+                        cluster_description = f"Clustering {len(cluster_nodes)} entities"
+                        await record_llm_usage_with_context(
+                            token_estimator=token_estimator,
+                            call_type=LLMCallType.HIERARCHICAL_CLUSTERING,
+                            actual_response=summarize_result,
+                            chunk_content=cluster_description,
+                            chunk_size=len(cluster_description.split()),
+                            document_type="general",
+                            model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                            success=True,
+                            metadata={
+                                "layer": layer,
+                                "cluster_label": int(label),
+                                "cluster_size": len(cluster_nodes),
+                                "total_length": total_length,
+                            }
+                        )
+                    except ImportError:
+                        pass  # Skip recording if imports fail
                 chunk_key = ""
                 # resolve results
                 records = split_string_by_multi_markers(                                            # split entities from result --> list of entities
