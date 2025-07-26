@@ -1,46 +1,81 @@
-# HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge
+# 🤗 HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge
+This is the repo for the paper [HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge](https://arxiv.org/abs/2503.10150).
 
-This repo is *not* the official repo for HiRAG. The idea, the concept, the main mechanism, all belong to [@hhy-huang](https://github.com/hhy-huang). You can find the original repo [here](https://github.com/hhy-huang/HiRAG), and the paper [here](https://arxiv.org/pdf/2503.10150).
+## Model Pipeline
 
-You can find the original readme file [here](readme.hhy-huang.md).
+![image-20240129111934589](./imgs/hirag_ds_trans.drawio.png)
 
-## What this repo changes
+## Install
 
-The main purpose of the fork is to specialize HiRAG for academic– specifically math knowledge. To do that, I've changed the prompts extensively. Most knowledge graph extraction libraries don't work for such purposes because the LLMs tend to extract information in the worst way possible. Let me explain by a few examples:
+```bash
+# remember clone this repo first
+cd HiRAG
+pip install -e .
+```
 
-![image-example](imgs/example_theorem.png)
+## Quick Start
 
-A general purpose Graph RAG / HiRAG will extract entities such as $\chi$, $G \in \mathcal{T}_X$, $\phi$, and so on.
-The problem with this is that none of these "entities" should be in the graph. They are merely constructed for the sake of the argument and never used again. A mathematically aware LLM will notice this and won't extract them.
+You can just utilize the following code to perform a query with HiRAG.
 
-The purpose is to extract the *facts* that matter, that are *permanent* in the sense that they are valid outside their local context. Another example is:
+```python
+graph_func = HiRAG(
+    working_dir="./your_work_dir",
+    enable_llm_cache=True,
+    enable_hierarchical_mode=True, 
+    embedding_batch_num=6,
+    embedding_func_max_async=8, # according to your machine
+    enable_naive_rag=True
+    )
+# indexing
+with open("path_to_your_context.txt", "r") as f:
+    graph_func.insert(f.read())
+# retrieval & generation
+print("Perform hi search:")
+print(graph_func.query("The question you want to ask?", param=QueryParam(mode="hi")))
+```
 
-![image-example-2](imgs/example-section-text.png)
+Or if you want to employ HiRAG with DeepSeek, ChatGLM, or other third-party retrieval api, here are the examples in `./hi_Search_deepseek.py`, `./hi_Search_glm.py`, and `./hi_Search_openai.py`. The API keys and the LLM configurations can be set at `./config.yaml`.
 
-A general purpose HiRAG would extract almost *all statements* from here, such as "Chapter 7", "Definition 7.13", and so on. It's not hard to see why this is a problem.
-Again, my implementation will instruct the LLM to completely ignore these, only extracting entities such as $\mathcal{B}_{SBCI}$, "Turing Completeness", and so on.
 
-## Other improvements
+## Evaluation
 
-Aside from specializing it for mathematical/academical purposes, I have also made a few general improvements.
+We take the procedure in Mix dataset as an example.
 
-### Disambugiation
+```shell
+cd ./HiRAG/eval
+```
 
-The original extraction pipeline would look for entities with identical names and merge them in an LLM-assisted manner. This approach is naive because it assumes that different passes would extract the same entity with the *exact same name*. Even if you set the LLM temperature to zero, since the context will change, you can not guarantee that one LLM would name an entity "Turing Completeness", while the other names it "The Turing Completeness Property", while the other names it "Turing Complete". Therefore, I added one extra step to the pipeline, where we perform both semantic and lexical analysis of the entity names, decide on candidates that may refer to the same entity, and ask an LLM to decide whether they refer to the same entity or not. For entities deemed the same, we assign them the same name before proceeding. Then, the same process of merging and the rest proceeds as before.
+1. Extract context from original QA datasets.
+```shell
+python extract_context.py -i ./datasets/mix -o ./datasets/mix
+```
 
-### Ingestion resillience
+2. Insert context to Graph Database.
+```shell
+python insert_context_deepseek.py
+```
 
-The ingestion now includes:
+Note that the script `insert_context_deepseek.py` is for the setting of generation with DeepSeek-v3 api, you can replace that with `insert_context_openai.py` or `insert_context_glm.py`.
 
-- Token estimation: The codebase estimates how much input/output tokens will be spent per entity. This includes learnable parameters, so the estimation accuracy will improve over time.
-- Token tracking: It will track the actual tokens spent.
-- Rate limiting: The ingestion pipeline will adhere to rate limiting parameters. For example, if there's a 10 RPM rate limit, it will wait after making 10 requests. Similarly, it will adhere to token limitations and other limitations.
-- Progress tracking: Aside from logs, there is a central dashboard to track the progress of ingestion now.
-- Validation, configuration, error handling: General improvements made. A central configuration exists now for detailed parameters about document ingestion.
+3. Test with different versions of HiRAG.
+```shell
+# there are different retrieval options
+# If you want to employ HiRAG approach, just run:
+python test_deepseek.py -d mix -m hi
+# If you want to employ naive RAG approach, just run:
+python test_deepseek.py -d mix -m naive
+# If you want to employ HiRAG approach w/o bridge, just run:
+python test_deepseek.py -d mix -m hi_nobridge
+# If you want to employ HiRAG approach with retrieving only local knowledge, just run:
+python test_deepseek.py -d mix -m hi_local
+# If you want to employ HiRAG approach with retrieving only global knowledge, just run:
+python test_deepseek.py -d mix -m hi_global
+# If you want to employ HiRAG approach with retrieving only bridge knowledge, just run:
+python test_deepseek.py -d mix -m hi_bridge
+```
 
-## Note
+Note that the dataset `mix` can be replaced to any other datasets in [Hugging Face link](https://huggingface.co/datasets/TommyChien/UltraDomain/tree/main). And the script `test_deepseek.py` is for the setting of generation with DeepSeek-v3 api, you can replace that with `test_openai.py` or `test_glm.py`.
 
-<<<<<<< HEAD
 4. Evaluate the generated answers.
 
 First step, request for evaluations.
@@ -223,6 +258,3 @@ We gratefully acknowledge the use of the following open-source projects in our w
   year={2025}
 }
 ```
-=======
-The codebase is a work-in-progress as of Jul 26, 2025. This section will be removed when it is production-ready.
->>>>>>> eb7ea88d12777968df691861e3e0504c55231ab0
