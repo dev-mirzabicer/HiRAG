@@ -1,260 +1,43 @@
-# 🤗 HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge
-This is the repo for the paper [HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge](https://arxiv.org/abs/2503.10150).
+# HiRAG: Retrieval-Augmented Generation with Hierarchical Knowledge
 
-## Model Pipeline
+This repo is *not* the official repo for HiRAG. The idea, the concept, the main mechanism, all belong to [@hhy-huang](https://github.com/hhy-huang). You can find the original repo [here](https://github.com/hhy-huang/HiRAG), and the paper [here](https://arxiv.org/pdf/2503.10150).
 
-![image-20240129111934589](./imgs/hirag_ds_trans.drawio.png)
+You can find the original readme file [here](readme.hhy-huang.md).
 
-## Install
+## What this repo changes
 
-```bash
-# remember clone this repo first
-cd HiRAG
-pip install -e .
-```
+The main purpose of the fork is to specialize HiRAG for academic– specifically math knowledge. To do that, I've changed the prompts extensively. Most knowledge graph extraction libraries don't work for such purposes because the LLMs tend to extract information in the worst way possible. Let me explain by a few examples:
 
-## Quick Start
+![image-example](imgs/example_theorem.png)
 
-You can just utilize the following code to perform a query with HiRAG.
+A general purpose Graph RAG / HiRAG will extract entities such as $\chi$, $G \in \mathcal{T}_X$, $\phi$, and so on.
+The problem with this is that none of these "entities" should be in the graph. They are merely constructed for the sake of the argument and never used again. A mathematically aware LLM will notice this and won't extract them.
 
-```python
-graph_func = HiRAG(
-    working_dir="./your_work_dir",
-    enable_llm_cache=True,
-    enable_hierarchical_mode=True, 
-    embedding_batch_num=6,
-    embedding_func_max_async=8, # according to your machine
-    enable_naive_rag=True
-    )
-# indexing
-with open("path_to_your_context.txt", "r") as f:
-    graph_func.insert(f.read())
-# retrieval & generation
-print("Perform hi search:")
-print(graph_func.query("The question you want to ask?", param=QueryParam(mode="hi")))
-```
+The purpose is to extract the *facts* that matter, that are *permanent* in the sense that they are valid outside their local context. Another example is:
 
-Or if you want to employ HiRAG with DeepSeek, ChatGLM, or other third-party retrieval api, here are the examples in `./hi_Search_deepseek.py`, `./hi_Search_glm.py`, and `./hi_Search_openai.py`. The API keys and the LLM configurations can be set at `./config.yaml`.
+![image-example-2](imgs/example-section-text.png)
 
+A general purpose HiRAG would extract almost *all statements* from here, such as "Chapter 7", "Definition 7.13", and so on. It's not hard to see why this is a problem.
+Again, my implementation will instruct the LLM to completely ignore these, only extracting entities such as $\mathcal{B}_{SBCI}$, "Turing Completeness", and so on.
 
-## Evaluation
+## Other improvements
 
-We take the procedure in Mix dataset as an example.
+Aside from specializing it for mathematical/academical purposes, I have also made a few general improvements.
 
-```shell
-cd ./HiRAG/eval
-```
+### Disambugiation
 
-1. Extract context from original QA datasets.
-```shell
-python extract_context.py -i ./datasets/mix -o ./datasets/mix
-```
+The original extraction pipeline would look for entities with identical names and merge them in an LLM-assisted manner. This approach is naive because it assumes that different passes would extract the same entity with the *exact same name*. Even if you set the LLM temperature to zero, since the context will change, you can not guarantee that one LLM would name an entity "Turing Completeness", while the other names it "The Turing Completeness Property", while the other names it "Turing Complete". Therefore, I added one extra step to the pipeline, where we perform both semantic and lexical analysis of the entity names, decide on candidates that may refer to the same entity, and ask an LLM to decide whether they refer to the same entity or not. For entities deemed the same, we assign them the same name before proceeding. Then, the same process of merging and the rest proceeds as before.
 
-2. Insert context to Graph Database.
-```shell
-python insert_context_deepseek.py
-```
+### Ingestion resillience
 
-Note that the script `insert_context_deepseek.py` is for the setting of generation with DeepSeek-v3 api, you can replace that with `insert_context_openai.py` or `insert_context_glm.py`.
+The ingestion now includes:
 
-3. Test with different versions of HiRAG.
-```shell
-# there are different retrieval options
-# If you want to employ HiRAG approach, just run:
-python test_deepseek.py -d mix -m hi
-# If you want to employ naive RAG approach, just run:
-python test_deepseek.py -d mix -m naive
-# If you want to employ HiRAG approach w/o bridge, just run:
-python test_deepseek.py -d mix -m hi_nobridge
-# If you want to employ HiRAG approach with retrieving only local knowledge, just run:
-python test_deepseek.py -d mix -m hi_local
-# If you want to employ HiRAG approach with retrieving only global knowledge, just run:
-python test_deepseek.py -d mix -m hi_global
-# If you want to employ HiRAG approach with retrieving only bridge knowledge, just run:
-python test_deepseek.py -d mix -m hi_bridge
-```
+- Token estimation: The codebase estimates how much input/output tokens will be spent per entity. This includes learnable parameters, so the estimation accuracy will improve over time.
+- Token tracking: It will track the actual tokens spent.
+- Rate limiting: The ingestion pipeline will adhere to rate limiting parameters. For example, if there's a 10 RPM rate limit, it will wait after making 10 requests. Similarly, it will adhere to token limitations and other limitations.
+- Progress tracking: Aside from logs, there is a central dashboard to track the progress of ingestion now.
+- Validation, configuration, error handling: General improvements made. A central configuration exists now for detailed parameters about document ingestion.
 
-Note that the dataset `mix` can be replaced to any other datasets in [Hugging Face link](https://huggingface.co/datasets/TommyChien/UltraDomain/tree/main). And the script `test_deepseek.py` is for the setting of generation with DeepSeek-v3 api, you can replace that with `test_openai.py` or `test_glm.py`.
+## Note
 
-4. Evaluate the generated answers.
-
-First step, request for evaluations.
-```shell
-python batch_eval.py -m request -api openai
-python batch_eval.py -m request -api deepseek
-```
-
-Second step, get the results.
-```shell
-python batch_eval.py -m result -api openai
-python batch_eval.py -m result -api deepseek
-```
-
-## Results
-
-### Compare with Naive RAG:
-
-With the config `output_file` set as `f"./datasets/{DATASET}/{DATASET}_eval_hi_naive.jsonl"`, just run the command:
-```
-python batch_eval.py -m result -api openai
-```
-
-| Dataset |  Dimension  | NaiveRAG % | HiRAG % |
-|----------:|:--------:|--------------:|----------------:|
-|         Mix||||
-|           |Comprehensiveness|           16.6|             **83.4**|
-|           |Empowerment|           11.6|             **88.4**|
-|           |Diversity|           12.7|             **87.3**|
-|           |Overall|           12.4|             **87.6**|
-|        CS||||
-|           |Comprehensiveness|           30.0|             **70.0**|
-|           |Empowerment|           29.0|             **71.0**|
-|           |Diversity|           14.5|             **85.5**|
-|           |Overall|           26.5|             **73.5**|
-|        Legal||||
-|           |Comprehensiveness|           32.5|             **67.5**|
-|           |Empowerment|           25.0|             **75.0**|
-|           |Diversity|           22.0|             **78.0**|
-|           |Overall|           22.5|             **74.5**|
-|        Agriculture||||
-|           |Comprehensiveness|           34.0|             **66.0**|
-|           |Empowerment|           31.0|             **69.0**|
-|           |Diversity|           21.0|             **79.0**|
-|           |Overall|           28.5|             **71.5**|
-
-
-### Compare with GraphRAG:
-
-With the config `output_file` set as `f"./datasets/{DATASET}/{DATASET}_eval_hi_graphrag.jsonl"`, just run the command:
-```
-python batch_eval.py -m result -api openai
-```
-
-| Dataset |  Dimension  | GraphRAG % | HiRAG % |
-|----------:|:--------:|--------------:|----------------:|
-|         Mix||||
-|           |Comprehensiveness|           42.1|             **57.9**|
-|           |Empowerment|           35.1|             **64.9**|
-|           |Diversity|           40.5|             **59.5**|
-|           |Overall|           35.9|             **64.1**|
-|        CS||||
-|           |Comprehensiveness|           40.5|             **59.5**|
-|           |Empowerment|           38.5|             **61.5**|
-|           |Diversity|           30.5|             **69.5**|
-|           |Overall|           36.0|             **64.0**|
-|        Legal||||
-|           |Comprehensiveness|           48.5|             **51.5**|
-|           |Empowerment|           43.5|             **56.5**|
-|           |Diversity|           47.0|             **53.0**|
-|           |Overall|           45.5|             **54.5**|
-|        Agriculture||||
-|           |Comprehensiveness|           49.0|             **51.0**|
-|           |Empowerment|           48.5|             **51.5**|
-|           |Diversity|           45.5|             **54.5**|
-|           |Overall|           46.0|             **54.0**|
-
-### Compare with LightRAG:
-
-With the config `output_file` set as `f"./datasets/{DATASET}/{DATASET}_eval_hi_lightrag.jsonl"`, just run the command:
-```
-python batch_eval.py -m result -api openai
-```
-
-| Dataset |  Dimension  | LightRAG % | HiRAG % |
-|----------:|:--------:|--------------:|----------------:|
-|         Mix||||
-|           |Comprehensiveness|           36.8|             **63.2**|
-|           |Empowerment|           34.9|             **65.1**|
-|           |Diversity|           34.1|             **65.9**|
-|           |Overall|           34.1|             **65.9**|
-|        CS||||
-|           |Comprehensiveness|           44.5|             **55.5**|
-|           |Empowerment|           41.5|             **58.5**|
-|           |Diversity|           33.0|             **67.0**|
-|           |Overall|           41.0|             **59.0**|
-|        Legal||||
-|           |Comprehensiveness|           49.0|             **51.0**|
-|           |Empowerment|           43.5|             **56.5**|
-|           |Diversity|           **63.0**|             37.0|
-|           |Overall|           48.0|             **52.0**|
-|        Agriculture||||
-|           |Comprehensiveness|           38.5|             **61.5**|
-|           |Empowerment|           36.5|             **63.5**|
-|           |Diversity|           37.5|             **62.5**|
-|           |Overall|           38.5|             **61.5**|
-
-### Compare with FastGraphRAG:
-
-With the config `output_file` set as `f"./datasets/{DATASET}/{DATASET}_eval_hi_fastgraphrag.jsonl"`, just run the command:
-```
-python batch_eval.py -m result -api openai
-```
-
-| Dataset |  Dimension  | FastGraphRAG % | HiRAG % |
-|----------:|:--------:|--------------:|----------------:|
-|         Mix||||
-|           |Comprehensiveness|           0.8|             **99.2**|
-|           |Empowerment|           0.8|             **99.2**|
-|           |Diversity|           0.8|             **99.2**|
-|           |Overall|           0.8|             **99.2**|
-|        CS||||
-|           |Comprehensiveness|           0.0|             **100.0**|
-|           |Empowerment|           0.0|             **100.0**|
-|           |Diversity|           0.5|             **99.5**|
-|           |Overall|           0.0|             **100.0**|
-|        Legal||||
-|           |Comprehensiveness|           1.0|             **99.0**|
-|           |Empowerment|           0.0|             **100.0**|
-|           |Diversity|              1.5|             **98.5**|
-|           |Overall|           0.0|             **100.0**|
-|        Agriculture||||
-|           |Comprehensiveness|           0.0|             **100.0**|
-|           |Empowerment|           0.0|             **100.0**|
-|           |Diversity|           0.0|             **100.0**|
-|           |Overall|           0.0|             **100.0**|
-
-### Compare with KAG:
-
-With the config `output_file` set as `f"./datasets/{DATASET}/{DATASET}_eval_hi_kag.jsonl"`, just run the command:
-```
-python batch_eval.py -m result -api openai
-```
-
-| Dataset |  Dimension  | KAG % | HiRAG % |
-|----------:|:--------:|--------------:|----------------:|
-|         Mix||||
-|           |Comprehensiveness|           2.3|             **97.7**|
-|           |Empowerment|           3.5|             **96.5**|
-|           |Diversity|           3.8|             **96.2**|
-|           |Overall|           2.3|             **97.7**|
-|        CS||||
-|           |Comprehensiveness|           1.0|             **99.0**|
-|           |Empowerment|           4.5|             **95.5**|
-|           |Diversity|           5.0|             **95.0**|
-|           |Overall|           1.5|             **98.5**|
-|        Legal||||
-|           |Comprehensiveness|           16.5|             **83.5**|
-|           |Empowerment|           9.0|             **91.0**|
-|           |Diversity|              11.0|             **89.0**|
-|           |Overall|           8.5|             **91.5**|
-|        Agriculture||||
-|           |Comprehensiveness|           5.0|             **95.0**|
-|           |Empowerment|           5.0|             **95.0**|
-|           |Diversity|           3.5|             **96.5**|
-|           |Overall|           0.0|             **100.0**|
-
-## Acknowledgement
-We gratefully acknowledge the use of the following open-source projects in our work:
-- [nano-graphrag](https://github.com/gusye1234/nano-graphrag): a simple, easy-to-hack GraphRAG implementation
-
-- [RAPTOR](https://github.com/parthsarthi03/raptor): a novel approach to retrieval-augmented language models by constructing a recursive tree structure from documents.
-
-## Cite Us
-```python
-@article{huang2025retrieval,
-  title={Retrieval-Augmented Generation with Hierarchical Knowledge},
-  author={Huang, Haoyu and Huang, Yongfeng and Yang, Junjie and Pan, Zhenyu and Chen, Yongqiang and Ma, Kaili and Chen, Hongzhi and Cheng, James},
-  journal={arXiv preprint arXiv:2503.10150},
-  year={2025}
-}
-```
+The codebase is a work-in-progress as of Jul 26, 2025. This section will be removed when it is production-ready.
