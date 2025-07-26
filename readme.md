@@ -6,7 +6,7 @@ You can find the original readme file [here](readme.hhy-huang.md).
 
 ## What this repo changes
 
-The main purpose of the fork is to specialize HiRAG for academic– specifically math knowledge. To do that, I've changed the prompts extensively. Most knowledge graph extraction libraries don't work for such purposes because the LLMs tend to extract information in the worst way possible. Let me explain by a few examples:
+The main purpose of the fork is to specialize HiRAG for academic– specifically math knowledge. To do that, I've changed the codebase and the prompts extensively. Most knowledge graph extraction libraries don't work for such purposes because the LLMs tend to extract information in the worst way possible. Let me explain by a few examples:
 
 ![image-example](imgs/example_theorem.png)
 
