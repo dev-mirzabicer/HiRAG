@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import TypedDict, Union, Literal, Generic, TypeVar
+from typing import TypedDict, Union, Literal, Generic, TypeVar, Any
 from ._utils import EmbeddingFunc
 import numpy as np
 
@@ -32,7 +32,7 @@ SingleCommunitySchema = TypedDict(
     {
         "level": int,
         "title": str,
-        "edges": list[list[str, str]],
+        "edges": list[tuple[str, str]],
         "nodes": list[str],
         "chunk_ids": list[str],
         "occurrence": float,
@@ -105,6 +105,12 @@ class BaseKVStorage(Generic[T], StorageNameSpace):
     async def drop(self):
         raise NotImplementedError
 
+    async def get_all(self) -> dict[str, T]:
+        raise NotImplementedError
+
+    async def delete(self, id: str):
+        raise NotImplementedError
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace):
@@ -133,11 +139,11 @@ class BaseGraphStorage(StorageNameSpace):
     ) -> Union[list[tuple[str, str]], None]:
         raise NotImplementedError
 
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, Any]):
         raise NotImplementedError
 
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, Any]
     ):
         raise NotImplementedError
 
@@ -150,3 +156,36 @@ class BaseGraphStorage(StorageNameSpace):
 
     async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
         raise NotImplementedError("Node embedding is not used in HiRAG.")
+
+    async def get_node_count(self) -> int:
+        """Return the total number of nodes in the graph."""
+        raise NotImplementedError
+
+    async def get_all_nodes(self) -> list[str]:
+        """Return all node IDs in the graph."""
+        raise NotImplementedError
+
+    async def get_edge_count(self) -> int:
+        """Return the total number of edges in the graph."""
+        raise NotImplementedError
+
+    async def get_all_edges(self) -> list[tuple[str, str]]:
+        """Return all edges in the graph as (source, target) tuples."""
+        raise NotImplementedError
+
+    async def find_shortest_path(self, start_entity: str, end_entity: str, **kwargs) -> Union[dict, None]:
+        """Find shortest path between two entities."""
+        raise NotImplementedError
+
+    async def find_all_shortest_paths(self, start_entity: str, end_entity: str, **kwargs) -> list[dict]:
+        """Find all shortest paths between two entities."""
+        raise NotImplementedError
+
+    async def find_k_shortest_paths(self, start_entity: str, end_entity: str, k: int, **kwargs) -> list[dict]:
+        """Find k shortest paths between two entities."""
+        raise NotImplementedError
+
+    @property
+    def graph(self) -> Any:
+        """Access to the underlying graph object."""
+        raise NotImplementedError

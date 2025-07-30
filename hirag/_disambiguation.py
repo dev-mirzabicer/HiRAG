@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 # Third-party imports for similarity analysis
 try:
-    from thefuzz import fuzz
+    from thefuzz import fuzz  # type: ignore
 except ImportError:
     fuzz = None
     logging.warning("thefuzz not available. Install with: pip install thefuzz")
@@ -277,6 +277,7 @@ class EntityDisambiguator:
             entity_names: List of entity names to compare
             uf: Union-Find structure to update with similar entities
         """
+        assert fuzz is not None
         threshold = self.config.lexical_similarity_threshold
         unions_made = 0
 
@@ -659,14 +660,7 @@ class EntityDisambiguator:
                 return {}
 
             # Fetch original text chunks
-            source_chunks = await self._fetch_source_chunks(list(source_chunks_needed))
-            chunk_lookup = {
-                chunk["id"]
-                if isinstance(chunk, dict) and "id" in chunk
-                else str(i): chunk
-                for i, chunk in enumerate(source_chunks)
-                if chunk
-            }
+            chunk_lookup = await self._fetch_source_chunks(list(source_chunks_needed))
 
             # Add full original text context to each entity (no truncation)
             for entity_data in cluster_data:
@@ -696,6 +690,7 @@ class EntityDisambiguator:
             prompt = prompt_template.format(input_json_for_cluster=cluster_json)
 
             # Call LLM
+            assert self.best_model_func is not None
             llm_response = await self.best_model_func(prompt)
 
             # Parse and validate LLM response
@@ -754,7 +749,7 @@ class EntityDisambiguator:
             logger.error(f"Error verifying cluster {cluster}: {e}", exc_info=True)
             return {}
 
-    async def _fetch_source_chunks(self, chunk_ids: List[str]) -> List[Optional[Dict]]:
+    async def _fetch_source_chunks(self, chunk_ids: List[str]) -> Dict[str, TextChunkSchema]:
         """
         Fetch source text chunks from the key-value store.
 
@@ -762,24 +757,24 @@ class EntityDisambiguator:
             chunk_ids: List of chunk IDs to fetch
 
         Returns:
-            List of chunk dictionaries or None for missing chunks
+            Dict mapping chunk ID to chunk dictionary
         """
         if not chunk_ids:
-            return []
+            return {}
 
         try:
             # Filter out empty or invalid chunk IDs
-            valid_chunk_ids = [cid for cid in chunk_ids if cid and cid.strip()]
+            valid_chunk_ids = sorted(list(set(cid for cid in chunk_ids if cid and cid.strip())))
 
             if not valid_chunk_ids:
-                return []
+                return {}
 
             chunks = await self.text_chunks_kv.get_by_ids(valid_chunk_ids)
-            return chunks
+            return {cid: chunk for cid, chunk in zip(valid_chunk_ids, chunks) if chunk}
 
         except Exception as e:
             logger.error(f"Error fetching source chunks: {e}")
-            return []
+            return {}
 
     async def _parse_and_validate_llm_decision(
         self, llm_response: str, cluster: List[str]

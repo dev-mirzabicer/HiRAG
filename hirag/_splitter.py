@@ -1,4 +1,4 @@
-from typing import List, Optional, Union, Literal
+from typing import List, Optional, Union, Literal, Callable, Any
 
 class SeparatorSplitter:
     def __init__(
@@ -7,7 +7,7 @@ class SeparatorSplitter:
         keep_separator: Union[bool, Literal["start", "end"]] = "end",
         chunk_size: int = 4000,
         chunk_overlap: int = 200,
-        length_function: callable = len,
+        length_function: Callable[[Any], int] = len,
     ):
         self._separators = separators or []
         self._keep_separator = keep_separator

@@ -20,23 +20,31 @@ import json
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Callable, Union
+from typing import Dict, List, Optional, Any, Callable, Union, TYPE_CHECKING
 from enum import Enum
 import threading
 from collections import deque, defaultdict
 import math
 
 try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich.progress import Progress, TaskID, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn
-    from rich.live import Live
-    from rich.layout import Layout
-    from rich.panel import Panel
-    from rich.text import Text
+    from rich.console import Console  # type: ignore
+    from rich.table import Table  # type: ignore
+    from rich.progress import Progress, TaskID, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn  # type: ignore
+    from rich.live import Live  # type: ignore
+    from rich.layout import Layout  # type: ignore
+    from rich.panel import Panel  # type: ignore
+    from rich.text import Text  # type: ignore
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
+    if TYPE_CHECKING:
+        from rich.console import Console  # type: ignore
+        from rich.table import Table  # type: ignore
+        from rich.progress import Progress, TaskID, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn  # type: ignore
+        from rich.live import Live  # type: ignore
+        from rich.layout import Layout  # type: ignore
+        from rich.panel import Panel  # type: ignore
+        from rich.text import Text  # type: ignore
 
 from ._utils import logger
 from .base import BaseKVStorage
@@ -179,10 +187,10 @@ class ProgressTracker:
         self.retry_manager: Optional[RetryManager] = None
         
         # Dashboard components
-        self.console = Console() if RICH_AVAILABLE else None
-        self.rich_progress: Optional[Progress] = None
-        self.main_task_id: Optional[TaskID] = None
-        self.live_display: Optional[Live] = None
+        self.console: Optional['Console'] = Console() if RICH_AVAILABLE else None
+        self.rich_progress: Optional['Progress'] = None
+        self.main_task_id: Optional['TaskID'] = None
+        self.live_display: Optional['Live'] = None
         
         # Background update task
         self._update_task: Optional[asyncio.Task] = None
@@ -396,12 +404,18 @@ class ProgressTracker:
                 retry_stats = await self.retry_manager.get_statistics()
                 circuit_status = await self.retry_manager.get_circuit_breaker_status()
                 
-                total_retries = sum(stats.total_retries for stats in retry_stats.values())
+                # Handle both Dict[LLMCallType, RetryStatistics] and single RetryStatistics
+                if isinstance(retry_stats, dict):
+                    stats_list = list(retry_stats.values())
+                else:
+                    stats_list = [retry_stats]
+                
+                total_retries = sum(stats.total_retries for stats in stats_list)
                 self.live_stats.total_retries = total_retries
                 
                 # Aggregate failure breakdown
                 failure_breakdown = defaultdict(int)
-                for stats in retry_stats.values():
+                for stats in stats_list:
                     for failure_type, count in stats.failure_breakdown.items():
                         failure_breakdown[failure_type] += count
                 self.live_stats.failure_breakdown = dict(failure_breakdown)
@@ -447,10 +461,11 @@ class ProgressTracker:
             )
             
             # Create main progress task
-            self.main_task_id = self.rich_progress.add_task(
-                "Overall Progress", 
-                total=100
-            )
+            if self.rich_progress is not None:
+                self.main_task_id = self.rich_progress.add_task(
+                    "Overall Progress", 
+                    total=100
+                )
             
             # Create layout for rich dashboard
             layout = self._create_rich_layout()
@@ -462,14 +477,19 @@ class ProgressTracker:
                 refresh_per_second=2,
                 screen=True
             )
-            self.live_display.start()
+            if self.live_display is not None:
+                self.live_display.start()
             
         except Exception as e:
             logger.error(f"Error starting Rich dashboard: {e}")
             self.dashboard_type = DashboardType.CONSOLE_LOG
 
-    def _create_rich_layout(self) -> Layout:
+    def _create_rich_layout(self) -> 'Layout':
         """Create the Rich dashboard layout"""
+        if not RICH_AVAILABLE:
+            raise RuntimeError("Rich library not available")
+        
+        from rich.layout import Layout  # type: ignore
         layout = Layout()
         
         layout.split(
@@ -488,9 +508,16 @@ class ProgressTracker:
         
         return layout
 
-    def _update_rich_layout(self, layout: Layout):
+    def _update_rich_layout(self, layout: 'Layout'):
         """Update the Rich dashboard layout with current data"""
+        if not RICH_AVAILABLE:
+            return
+            
         try:
+            from rich.text import Text  # type: ignore
+            from rich.panel import Panel  # type: ignore
+            from rich.table import Table  # type: ignore
+            
             # Header
             header_text = Text()
             header_text.append("HiRAG Pipeline Progress Dashboard", style="bold magenta")

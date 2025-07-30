@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
 import time
-from typing import Any, Callable, Dict, List, Optional, Type, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Type, Union, cast, Coroutine, Awaitable
 
 import tiktoken
 
@@ -70,11 +70,12 @@ from ._checkpointing import (
     CheckpointStage,
 )
 from ._retry_manager import RetryManager, create_retry_manager
-from ._rate_limiting import RateLimiter, create_rate_limiter, DashboardType
+from ._rate_limiting import RateLimiter, create_rate_limiter
 from ._progress_tracking import (
     ProgressTracker,
     create_progress_tracker,
     progress_context,
+    DashboardType,
 )
 from ._estimation_db import EstimationDatabase, create_estimation_database
 
@@ -136,14 +137,14 @@ class HiRAG:
     query_better_than_threshold: float = 0.2
     using_azure_openai: bool = False
     using_gemini: bool = False
-    best_model_func: callable = gpt_4o_mini_complete
+    best_model_func: Callable[..., Coroutine[Any, Any, Any]] = gpt_4o_mini_complete
     best_model_max_token_size: int = 32768
     best_model_max_async: int = 8
-    cheap_model_func: callable = gpt_35_turbo_complete
+    cheap_model_func: Callable[..., Coroutine[Any, Any, Any]] = gpt_35_turbo_complete
     cheap_model_max_token_size: int = 32768
     cheap_model_max_async: int = 8
-    entity_extraction_func: callable = extract_entities
-    hierarchical_entity_extraction_func: callable = extract_hierarchical_entities
+    entity_extraction_func: Callable[..., Coroutine[Any, Any, Any]] = extract_entities
+    hierarchical_entity_extraction_func: Callable[..., Coroutine[Any, Any, Any]] = extract_hierarchical_entities
     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
     vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
@@ -151,7 +152,7 @@ class HiRAG:
     enable_llm_cache: bool = True
     always_create_working_dir: bool = True
     addon_params: dict = field(default_factory=dict)
-    convert_response_to_json_func: callable = convert_response_to_json
+    convert_response_to_json_func: Callable[..., Any] = convert_response_to_json
 
     # --- Entity Disambiguation and Merging (EDM) Configuration ---
     enable_entity_disambiguation: bool = True
@@ -294,8 +295,9 @@ class HiRAG:
         self.chunk_entity_relation_graph = self.graph_storage_cls(
             namespace="chunk_entity_relation", global_config=asdict(self)
         )
-        self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
-            self.embedding_func
+        self.embedding_func = cast(
+            EmbeddingFunc,
+            limit_async_func_call(self.embedding_func_max_async)(self.embedding_func)
         )
         self.entities_vdb = (
             self.vector_db_storage_cls(
@@ -641,7 +643,8 @@ class HiRAG:
                     except Exception:
                         pass  # Use default if estimation fails
 
-                # Apply rate limiting
+                # Apply rate limiting  
+                model_name: str = "unknown"  # Default value with explicit type
                 if self.rate_limiter:
                     model_name = self._extract_model_name_from_func(original_func)
                     await self.rate_limiter.acquire(
@@ -777,6 +780,7 @@ class HiRAG:
 
             # Chunk processing with retry logic
             max_chunk_retries = 3
+            inserting_chunks: dict = {}  # Initialize to avoid unbound variable issues
             for attempt in range(max_chunk_retries):
                 try:
                     inserting_chunks = get_chunks(
@@ -819,7 +823,7 @@ class HiRAG:
                         raise RuntimeError("Failed to process text chunks") from e
 
             # Naive RAG processing with error handling
-            if self.enable_naive_rag:
+            if self.enable_naive_rag and self.chunks_vdb is not None:
                 try:
                     logger.info("Insert chunks for naive RAG")
                     await self.chunks_vdb.upsert(inserting_chunks)
@@ -1298,7 +1302,7 @@ class HiRAG:
                 "relations_with_descriptions": 0,
                 "relations_with_weights": 0,
                 "low_quality_relations": 0,
-                "avg_relation_weight": 0,
+                "avg_relation_weight": 0.0,
             }
 
             # Rough estimates based on typical patterns
@@ -1564,6 +1568,10 @@ class HiRAG:
                         continue
 
                     # Create canonical edge key (sorted for consistency)
+                    if canonical_src is None or canonical_tgt is None:
+                        logger.warning(f"Skipping edge with None canonical names: {canonical_src} -> {canonical_tgt}")
+                        edge_processing_stats["skipped_invalid"] += 1
+                        continue
                     canonical_pair = tuple(sorted([canonical_src, canonical_tgt]))
 
                     # Update edge with canonical names and validate
@@ -1655,6 +1663,11 @@ class HiRAG:
             for canonical_pair, edge_instances in edges_by_canonical.items():
                 try:
                     src, tgt = canonical_pair
+                    
+                    # Ensure src and tgt are strings
+                    if not isinstance(src, str) or not isinstance(tgt, str):
+                        logger.warning(f"Skipping edge with non-string identifiers: {src} -> {tgt}")
+                        continue
 
                     # Verify that both source and target entities exist in successful entities
                     entity_names_set = {
@@ -1686,6 +1699,7 @@ class HiRAG:
 
             logger.info(f"Merging and upserting {len(edge_merge_tasks)} relations...")
 
+            successful_edges: int = 0  # Initialize to avoid unbound variable issues
             if edge_merge_tasks:
                 merged_edges_results = await asyncio.gather(
                     *[task for _, task in edge_merge_tasks], return_exceptions=True
@@ -1848,6 +1862,10 @@ class HiRAG:
         # Over-fetch if filtering is needed, as it's a post-processing step.
         fetch_k = top_k * 3 if temporary is not None else top_k
 
+        if self.entities_vdb is None:
+            logger.warning("Entities VDB is not available")
+            return []
+        
         vdb_results = await self.entities_vdb.query(query, top_k=fetch_k)
         if not vdb_results:
             return []
@@ -2000,8 +2018,8 @@ class HiRAG:
         weight_property: str,
     ) -> Optional[Dict[str, List]]:
         """NetworkX-specific path finding implementation."""
+        import networkx as nx
         try:
-            import networkx as nx
 
             graph = self.chunk_entity_relation_graph.graph
 
@@ -2199,8 +2217,8 @@ class HiRAG:
                 )
 
         elif isinstance(self.chunk_entity_relation_graph, NetworkXStorage):
+            import networkx as nx
             try:
-                import networkx as nx
 
                 graph = self.chunk_entity_relation_graph.graph
 
@@ -2410,6 +2428,10 @@ class HiRAG:
     ) -> Optional[str]:
         """Internal logic to construct the full context for a query."""
         # 1. Find initial entities via vector search
+        if self.entities_vdb is None:
+            logger.warning("Entities VDB is not available")
+            return None
+        
         vdb_results = await self.entities_vdb.query(
             query, top_k=param.top_k * 5
         )  # Over-fetch
@@ -2456,7 +2478,7 @@ class HiRAG:
         for i, n in enumerate(top_node_data):
             entities_list.append(
                 [
-                    i,
+                    str(i),
                     n["entity_name"],
                     n.get("entity_type", "unknown"),
                     n.get("description", "N/A"),
@@ -2469,7 +2491,7 @@ class HiRAG:
         for i, c in enumerate(use_communities):
             report = c.get("report_json", {})
             communities_list.append(
-                [i, report.get("title", "N/A"), report.get("summary", "N/A")]
+                [str(i), report.get("title", "N/A"), report.get("summary", "N/A")]
             )
         communities_context = list_of_list_to_csv(communities_list)
 
@@ -2486,7 +2508,7 @@ class HiRAG:
         # Formatting source texts
         texts_list = [["id", "content"]]
         for i, t in enumerate(use_text_units):
-            texts_list.append([i, t["content"]])
+            texts_list.append([str(i), t["content"]])
         text_units_context = list_of_list_to_csv(texts_list)
 
         return f"""
@@ -2607,7 +2629,7 @@ class HiRAG:
         # Format edges
         edges_list = [["source", "target", "description"]]
         for edge, details in zip(top_edge_tuples, filter(None, edge_details)):
-            edges_list.append([edge[0], edge[1], details.get("description", "N/A")])
+            edges_list.append([str(edge[0]), str(edge[1]), details.get("description", "N/A")])
         edges_csv = list_of_list_to_csv(edges_list)
 
         return f"""

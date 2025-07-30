@@ -1,9 +1,16 @@
 import asyncio
 import json
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any, cast, TYPE_CHECKING
 from collections import defaultdict
 from neo4j import AsyncGraphDatabase
 from dataclasses import dataclass
+
+# Handle LiteralString import for both static analysis and runtime
+if TYPE_CHECKING:
+    from typing_extensions import LiteralString  # pyright: ignore[reportMissingTypeStubs]
+else:
+    # Runtime fallback - not used in this module anymore
+    LiteralString = str
 
 from ..base import BaseGraphStorage, SingleCommunitySchema
 from .._utils import logger
@@ -43,6 +50,7 @@ class Neo4jStorage(BaseGraphStorage):
         use_weights: bool = False,
         weight_property: str = "weight",
         algorithm: str = "cypher_shortest",
+        **kwargs
     ) -> Optional[Dict[str, List]]:
         """
         Find the shortest path between two entities using various Neo4j algorithms.
@@ -117,7 +125,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    query, start_id=start_entity, end_id=end_entity
+                    query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 record = await result.single()
 
@@ -148,8 +156,8 @@ class Neo4jStorage(BaseGraphStorage):
         Requires GDS library to be installed and graph projection to be created.
         """
         async with self.async_driver.session() as session:
+            graph_name = f"hirag_temp_graph_{self.namespace}"
             try:
-                graph_name = f"hirag_temp_graph_{self.namespace}"
 
                 # Step 1: Create graph projection
                 projection_query = f"""
@@ -165,7 +173,7 @@ class Neo4jStorage(BaseGraphStorage):
                 RETURN graphName, nodeCount, relationshipCount
                 """
 
-                await session.run(projection_query)
+                await session.run(projection_query)  # type: ignore[arg-type]
                 logger.debug(f"Created GDS graph projection: {graph_name}")
 
                 # Step 2: Run Dijkstra algorithm
@@ -188,7 +196,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    dijkstra_query, start_id=start_entity, end_id=end_entity
+                    dijkstra_query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 record = await result.single()
 
@@ -219,7 +227,7 @@ class Neo4jStorage(BaseGraphStorage):
 
                 # Step 3: Clean up graph projection
                 cleanup_query = f"CALL gds.graph.drop('{graph_name}')"
-                await session.run(cleanup_query)
+                await session.run(cleanup_query)  # type: ignore[arg-type]
                 logger.debug(f"Cleaned up GDS graph projection: {graph_name}")
 
                 return path_result
@@ -229,7 +237,7 @@ class Neo4jStorage(BaseGraphStorage):
                 # Try to clean up projection if it exists
                 try:
                     cleanup_query = f"CALL gds.graph.drop('{graph_name}')"
-                    await session.run(cleanup_query)
+                    await session.run(cleanup_query)  # type: ignore[arg-type]
                 except:
                     pass
                 return None
@@ -260,7 +268,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    query, start_id=start_entity, end_id=end_entity
+                    query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 record = await result.single()
 
@@ -304,7 +312,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    query, start_id=start_entity, end_id=end_entity
+                    query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 record = await result.single()
 
@@ -325,7 +333,7 @@ class Neo4jStorage(BaseGraphStorage):
                 return None
 
     async def find_all_shortest_paths(
-        self, start_entity: str, end_entity: str, max_hops: int = 10, limit: int = 10
+        self, start_entity: str, end_entity: str, max_hops: int = 10, limit: int = 10, **kwargs
     ) -> List[Dict[str, List]]:
         """
         Find all shortest paths between two entities.
@@ -358,7 +366,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    query, start_id=start_entity, end_id=end_entity
+                    query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 paths = []
 
@@ -392,7 +400,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    legacy_query, start_id=start_entity, end_id=end_entity
+                    legacy_query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 async for record in result:
                     paths.append(
@@ -415,6 +423,7 @@ class Neo4jStorage(BaseGraphStorage):
         end_entity: str,
         k: int = 3,
         weight_property: str = "weight",
+        **kwargs
     ) -> List[Dict[str, List]]:
         """
         Find K shortest paths using Yen's algorithm (requires GDS library).
@@ -429,9 +438,8 @@ class Neo4jStorage(BaseGraphStorage):
             List of k shortest paths
         """
         async with self.async_driver.session() as session:
+            graph_name = f"hirag_yens_graph_{self.namespace}"
             try:
-                graph_name = f"hirag_yens_graph_{self.namespace}"
-
                 # Create graph projection for Yen's algorithm
                 projection_query = f"""
                 CALL gds.graph.project(
@@ -444,7 +452,7 @@ class Neo4jStorage(BaseGraphStorage):
                 )
                 """
 
-                await session.run(projection_query)
+                await session.run(projection_query)  # type: ignore[arg-type]
 
                 # Run Yen's K shortest paths algorithm
                 yens_query = f"""
@@ -468,7 +476,7 @@ class Neo4jStorage(BaseGraphStorage):
                 """
 
                 result = await session.run(
-                    yens_query, start_id=start_entity, end_id=end_entity
+                    yens_query, start_id=start_entity, end_id=end_entity  # type: ignore[arg-type]
                 )
                 paths = []
 
@@ -495,7 +503,7 @@ class Neo4jStorage(BaseGraphStorage):
 
                 # Clean up projection
                 cleanup_query = f"CALL gds.graph.drop('{graph_name}')"
-                await session.run(cleanup_query)
+                await session.run(cleanup_query)  # type: ignore[arg-type]
 
                 return paths
 
@@ -504,7 +512,7 @@ class Neo4jStorage(BaseGraphStorage):
                 # Clean up on error
                 try:
                     cleanup_query = f"CALL gds.graph.drop('{graph_name}')"
-                    await session.run(cleanup_query)
+                    await session.run(cleanup_query)  # type: ignore[arg-type]
                 except:
                     pass
                 return []
@@ -524,7 +532,7 @@ class Neo4jStorage(BaseGraphStorage):
     async def has_node(self, node_id: str) -> bool:
         async with self.async_driver.session() as session:
             result = await session.run(
-                f"MATCH (n:{self.namespace}) WHERE n.id = $node_id RETURN COUNT(n) > 0 AS exists",
+                f"MATCH (n:{self.namespace}) WHERE n.id = $node_id RETURN COUNT(n) > 0 AS exists",  # type: ignore[arg-type]
                 node_id=node_id,
             )
             record = await result.single()
@@ -535,7 +543,7 @@ class Neo4jStorage(BaseGraphStorage):
             result = await session.run(
                 f"MATCH (s:{self.namespace})-[r]->(t:{self.namespace}) "
                 "WHERE s.id = $source_id AND t.id = $target_id "
-                "RETURN COUNT(r) > 0 AS exists",
+                "RETURN COUNT(r) > 0 AS exists",  # type: ignore[arg-type]
                 source_id=source_node_id,
                 target_id=target_node_id,
             )
@@ -546,7 +554,7 @@ class Neo4jStorage(BaseGraphStorage):
         async with self.async_driver.session() as session:
             result = await session.run(
                 f"MATCH (n:{self.namespace}) WHERE n.id = $node_id "
-                f"RETURN size((n)-[]-(:{self.namespace})) AS degree",
+                f"RETURN size((n)-[]-(:{self.namespace})) AS degree",  # type: ignore[arg-type]
                 node_id=node_id,
             )
             record = await result.single()
@@ -557,7 +565,7 @@ class Neo4jStorage(BaseGraphStorage):
             result = await session.run(
                 f"MATCH (s:{self.namespace}), (t:{self.namespace}) "
                 "WHERE s.id = $src_id AND t.id = $tgt_id "
-                f"RETURN size((s)-[]-(:{self.namespace})) + size((t)-[]-(:{self.namespace})) AS degree",
+                f"RETURN size((s)-[]-(:{self.namespace})) + size((t)-[]-(:{self.namespace})) AS degree",  # type: ignore[arg-type]
                 src_id=src_id,
                 tgt_id=tgt_id,
             )
@@ -567,7 +575,7 @@ class Neo4jStorage(BaseGraphStorage):
     async def get_node(self, node_id: str) -> Union[dict, None]:
         async with self.async_driver.session() as session:
             result = await session.run(
-                f"MATCH (n:{self.namespace}) WHERE n.id = $node_id RETURN properties(n) AS node_data",
+                f"MATCH (n:{self.namespace}) WHERE n.id = $node_id RETURN properties(n) AS node_data",  # type: ignore[arg-type]
                 node_id=node_id,
             )
             record = await result.single()
@@ -596,7 +604,7 @@ class Neo4jStorage(BaseGraphStorage):
             result = await session.run(
                 f"MATCH (s:{self.namespace})-[r]->(t:{self.namespace}) "
                 "WHERE s.id = $source_id AND t.id = $target_id "
-                "RETURN properties(r) AS edge_data",
+                "RETURN properties(r) AS edge_data",  # type: ignore[arg-type]
                 source_id=source_node_id,
                 target_id=target_node_id,
             )
@@ -609,7 +617,7 @@ class Neo4jStorage(BaseGraphStorage):
         async with self.async_driver.session() as session:
             result = await session.run(
                 f"MATCH (s:{self.namespace})-[r]->(t:{self.namespace}) WHERE s.id = $source_id "
-                "RETURN s.id AS source, t.id AS target",
+                "RETURN s.id AS source, t.id AS target",  # type: ignore[arg-type]
                 source_id=source_node_id,
             )
             edges = []
@@ -617,18 +625,18 @@ class Neo4jStorage(BaseGraphStorage):
                 edges.append((record["source"], record["target"]))
             return edges
 
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, Any]):
         entity_type = node_data.get("entity_type", "UNKNOWN").strip('"')
         async with self.async_driver.session() as session:
             await session.run(
                 f"MERGE (n:{self.namespace}:{entity_type} {{id: $node_id}}) "
-                "SET n += $node_data",
+                "SET n += $node_data",  # type: ignore[arg-type]
                 node_id=node_id,
                 node_data=node_data,
             )
 
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, Any]
     ):
         edge_data.setdefault("weight", 0.0)
         async with self.async_driver.session() as session:
@@ -636,7 +644,7 @@ class Neo4jStorage(BaseGraphStorage):
                 f"MATCH (s:{self.namespace}), (t:{self.namespace}) "
                 "WHERE s.id = $source_id AND t.id = $target_id "
                 f"MERGE (s)-[r:{self.namespace}_RELATED]->(t) "
-                "SET r += $edge_data",
+                "SET r += $edge_data",  # type: ignore[arg-type]
                 source_id=source_node_id,
                 target_id=target_node_id,
                 edge_data=edge_data,
@@ -665,7 +673,7 @@ class Neo4jStorage(BaseGraphStorage):
                             }}
                         }}
                     )
-                    """
+                    """  # type: ignore[arg-type]
                 )
 
                 # Run Leiden algorithm
@@ -685,29 +693,34 @@ class Neo4jStorage(BaseGraphStorage):
                         }}
                     )
                     YIELD communityCount, modularities;
-                    """
+                    """  # type: ignore[arg-type]
                 )
-                result = await result.single()
-                community_count: int = result["communityCount"]
-                modularities = result["modularities"]
+                record = await result.single()
+                if record is not None:
+                    community_count: int = record["communityCount"]
+                    modularities = record["modularities"]
+                else:
+                    community_count = 0
+                    modularities = []
                 logger.info(
                     f"Performed graph clustering with {community_count} communities and modularities {modularities}"
                 )
             finally:
                 # Drop the projected graph
-                await session.run(f"CALL gds.graph.drop('graph_{self.namespace}')")
+                await session.run(f"CALL gds.graph.drop('graph_{self.namespace}')"  # type: ignore[arg-type]
+                )
 
     async def community_schema(self) -> dict[str, SingleCommunitySchema]:
-        results = defaultdict(
-            lambda: dict(
-                level=None,
-                title=None,
-                edges=set(),
-                nodes=set(),
-                chunk_ids=set(),
-                occurrence=0.0,
-                sub_communities=[],
-            )
+        results: Dict[str, Dict[str, Any]] = defaultdict(
+            lambda: {
+                "level": None,
+                "title": None,
+                "edges": set(),
+                "nodes": set(),
+                "chunk_ids": set(),
+                "occurrence": 0.0,
+                "sub_communities": [],
+            }
         )
 
         async with self.async_driver.session() as session:
@@ -718,7 +731,7 @@ class Neo4jStorage(BaseGraphStorage):
                 RETURN n.id AS node_id, n.source_id AS source_id, 
                        communityIds AS cluster_key,
                        connected_nodes
-                """
+                """  # type: ignore[arg-type]
             )
 
             max_num_ids = 0
@@ -732,8 +745,13 @@ class Neo4jStorage(BaseGraphStorage):
 
                     results[cluster_key]["level"] = level
                     results[cluster_key]["title"] = f"Cluster {cluster_key}"
-                    results[cluster_key]["nodes"].add(node_id)
-                    results[cluster_key]["edges"].update(
+                    nodes_set = results[cluster_key]["nodes"]
+                    assert isinstance(nodes_set, set)
+                    nodes_set.add(node_id)
+                    
+                    edges_set = results[cluster_key]["edges"]
+                    assert isinstance(edges_set, set)
+                    edges_set.update(
                         [
                             tuple(sorted([node_id, str(connected)]))
                             for connected in connected_nodes
@@ -741,28 +759,43 @@ class Neo4jStorage(BaseGraphStorage):
                         ]
                     )
                     chunk_ids = source_id.split(GRAPH_FIELD_SEP)
-                    results[cluster_key]["chunk_ids"].update(chunk_ids)
-                    max_num_ids = max(
-                        max_num_ids, len(results[cluster_key]["chunk_ids"])
-                    )
+                    chunk_ids_set = results[cluster_key]["chunk_ids"]
+                    assert isinstance(chunk_ids_set, set)
+                    chunk_ids_set.update(chunk_ids)
+                    max_num_ids = max(max_num_ids, len(chunk_ids_set))
 
             # Process results
             for k, v in results.items():
-                v["edges"] = [list(e) for e in v["edges"]]
-                v["nodes"] = list(v["nodes"])
-                v["chunk_ids"] = list(v["chunk_ids"])
-                v["occurrence"] = len(v["chunk_ids"]) / max_num_ids
+                edges_set = v["edges"]
+                assert isinstance(edges_set, set)
+                v["edges"] = [list(e) for e in edges_set]
+                
+                nodes_set = v["nodes"]
+                assert isinstance(nodes_set, set)
+                v["nodes"] = list(nodes_set)
+                
+                chunk_ids_set = v["chunk_ids"]
+                assert isinstance(chunk_ids_set, set)
+                chunk_ids_list = list(chunk_ids_set)
+                v["chunk_ids"] = chunk_ids_list
+                v["occurrence"] = len(chunk_ids_list) / max_num_ids
 
             # Compute sub-communities
             for cluster in results.values():
+                cluster_level = cluster["level"]
+                assert isinstance(cluster_level, int)
+                cluster_nodes = cluster["nodes"]
+                assert isinstance(cluster_nodes, list)
+                cluster_nodes_set = set(cluster_nodes)
+                
                 cluster["sub_communities"] = [
                     sub_key
                     for sub_key, sub_cluster in results.items()
-                    if sub_cluster["level"] > cluster["level"]
-                    and set(sub_cluster["nodes"]).issubset(set(cluster["nodes"]))
+                    if isinstance(sub_cluster["level"], int) and sub_cluster["level"] > cluster_level
+                    and isinstance(sub_cluster["nodes"], list) and set(sub_cluster["nodes"]).issubset(cluster_nodes_set)
                 ]
 
-        return dict(results)
+        return dict(results)  # type: ignore[return-value]
 
     async def index_done_callback(self):
         await self.async_driver.close()
@@ -771,10 +804,12 @@ class Neo4jStorage(BaseGraphStorage):
         async with self.async_driver.session() as session:
             try:
                 # Delete all relationships in the namespace
-                await session.run(f"MATCH (n:{self.namespace})-[r]-() DELETE r")
+                await session.run(f"MATCH (n:{self.namespace})-[r]-() DELETE r"  # type: ignore[arg-type]
+                )
 
                 # Delete all nodes in the namespace
-                await session.run(f"MATCH (n:{self.namespace}) DELETE n")
+                await session.run(f"MATCH (n:{self.namespace}) DELETE n"  # type: ignore[arg-type]
+                )
 
                 logger.info(
                     f"All nodes and edges in namespace '{self.namespace}' have been deleted."

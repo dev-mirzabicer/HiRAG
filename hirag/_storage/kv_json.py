@@ -44,3 +44,10 @@ class JsonKVStorage(BaseKVStorage):
 
     async def drop(self):
         self._data = {}
+
+    async def get_all(self) -> dict[str, dict]:
+        return self._data
+
+    async def delete(self, id: str):
+        if id in self._data:
+            del self._data[id]

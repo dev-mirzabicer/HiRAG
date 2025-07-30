@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
 import statistics
@@ -37,13 +37,11 @@ class UsageRecord:
     estimated_output_tokens: int = 0
     model_name: str = ""
     timestamp: float = 0.0
-    metadata: Dict[str, Any] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.time()
-        if self.metadata is None:
-            self.metadata = {}
 
     @property
     def input_accuracy(self) -> float:
@@ -706,7 +704,7 @@ class EstimationDatabase:
             Parameter record dictionary or None if not found
         """
         try:
-            return await self.storage.get(f"param_{parameter_name}")
+            return await self.storage.get_by_id(f"param_{parameter_name}")
         except Exception as e:
             logger.error(f"Failed to get parameter {parameter_name}: {e}")
             return None

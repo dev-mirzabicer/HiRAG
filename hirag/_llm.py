@@ -1,3 +1,4 @@
+import time
 import numpy as np
 
 from google import genai
@@ -12,7 +13,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from ._utils import compute_args_hash, wrap_embedding_func_with_attrs
+from ._utils import compute_args_hash, wrap_embedding_func_with_attrs, logger
 from .base import BaseKVStorage
 from ._token_estimation import WORDS_TO_TOKENS_RATIO
 
@@ -78,6 +79,7 @@ async def gemini_complete_if_cache(
         if key not in ["hashing_kv"]:
             config_params[key] = value
 
+    args_hash = None
     if hashing_kv is not None:
         args_hash = compute_args_hash(model, contents, system_prompt)
         if_cache_return = await hashing_kv.get_by_id(args_hash)
@@ -91,10 +93,11 @@ async def gemini_complete_if_cache(
         config=types.GenerateContentConfig(**config_params) if config_params else None,
     )
 
-    if hashing_kv is not None:
-        await hashing_kv.upsert({args_hash: {"return": response.text, "model": model}})
+    response_text = response.text or ""
+    if hashing_kv is not None and args_hash is not None:
+        await hashing_kv.upsert({args_hash: {"return": response_text, "model": model}})
         await hashing_kv.index_done_callback()
-    return response.text
+    return response_text
 
 
 @retry(
@@ -112,6 +115,7 @@ async def openai_complete_if_cache(
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
+    args_hash = None
     if hashing_kv is not None:
         args_hash = compute_args_hash(model, messages)
         if_cache_return = await hashing_kv.get_by_id(args_hash)
@@ -122,12 +126,13 @@ async def openai_complete_if_cache(
         model=model, messages=messages, **kwargs
     )
 
-    if hashing_kv is not None:
+    response_content = response.choices[0].message.content or ""
+    if hashing_kv is not None and args_hash is not None:
         await hashing_kv.upsert(
-            {args_hash: {"return": response.choices[0].message.content, "model": model}}
+            {args_hash: {"return": response_content, "model": model}}
         )
         await hashing_kv.index_done_callback()
-    return response.choices[0].message.content
+    return response_content
 
 
 async def gpt_4o_complete(
@@ -216,14 +221,18 @@ async def gemini_embedding(texts: list[str]) -> np.ndarray:
     """Generate embeddings using the new google-genai SDK."""
     gemini_client = get_gemini_async_client_instance()
 
-    # Use the new embedding API
+    # Use the new embedding API - convert to proper content format
+    # Cast to the expected type to satisfy the type checker
+    from typing import cast
     response = await gemini_client.aio.models.embed_content(
         model="gemini-embedding-exp-03-07",
-        contents=texts,
+        contents=cast(types.ContentListUnion, texts),
         config=types.EmbedContentConfig(task_type="retrieval_document"),
     )
 
     # Extract embeddings from the response
+    if response.embeddings is None:
+        return np.array([])
     embeddings = [embedding.values for embedding in response.embeddings]
     return np.array(embeddings)
 
@@ -243,6 +252,7 @@ async def azure_openai_complete_if_cache(
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
+    args_hash = None
     if hashing_kv is not None:
         args_hash = compute_args_hash(deployment_name, messages)
         if_cache_return = await hashing_kv.get_by_id(args_hash)
@@ -253,17 +263,18 @@ async def azure_openai_complete_if_cache(
         model=deployment_name, messages=messages, **kwargs
     )
 
-    if hashing_kv is not None:
+    response_content = response.choices[0].message.content or ""
+    if hashing_kv is not None and args_hash is not None:
         await hashing_kv.upsert(
             {
                 args_hash: {
-                    "return": response.choices[0].message.content,
+                    "return": response_content,
                     "model": deployment_name,
                 }
             }
         )
         await hashing_kv.index_done_callback()
-    return response.choices[0].message.content
+    return response_content
 
 
 async def azure_gpt_4o_complete(
@@ -316,11 +327,11 @@ async def record_llm_usage_with_context(
     estimated_input_tokens: int = 0,
     estimated_output_tokens: int = 0,
     chunk_content: str = "",
-    chunk_size: int = None,
+    chunk_size: int | None = None,
     document_type: str = "general",
     model_name: str = "",
     success: bool = True,
-    metadata: dict = None,
+    metadata: dict | None = None,
 ):
     """
     Record LLM usage with rich context for learning
@@ -349,9 +360,9 @@ async def record_llm_usage_with_context(
         from ._token_estimation import _extract_actual_usage
 
         # Extract actual token usage from the response
+        calculated_chunk_size = chunk_size or (len(chunk_content.split()) if chunk_content else 0)
         context = {
-            "chunk_size": chunk_size
-            or (len(chunk_content.split()) if chunk_content else None),
+            "chunk_size": calculated_chunk_size,
             "document_type": document_type,
             "model_name": model_name,
         }
@@ -384,7 +395,7 @@ async def record_llm_usage_with_context(
             estimated_input_tokens=estimated_input_tokens,
             estimated_output_tokens=estimated_output_tokens,
             model_name=model_name,
-            chunk_size=context.get("chunk_size"),
+            chunk_size=context.get("chunk_size", 0),
             document_type=document_type,
             success=success,
             metadata=metadata or {},
@@ -444,7 +455,7 @@ def create_instrumented_llm_caller(token_estimator, call_type, model_func):
                 call_type=call_type,
                 actual_response=result,
                 chunk_content=chunk_content,
-                chunk_size=chunk_size,
+                chunk_size=chunk_size or 0,
                 document_type=document_type,
                 model_name=model_name,
                 success=success,
@@ -465,7 +476,7 @@ def create_instrumented_llm_caller(token_estimator, call_type, model_func):
                 call_type=call_type,
                 actual_response="",
                 chunk_content=chunk_content,
-                chunk_size=chunk_size,
+                chunk_size=chunk_size or 0,
                 document_type=document_type,
                 model_name=model_name,
                 success=False,

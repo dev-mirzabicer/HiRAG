@@ -6,7 +6,7 @@ import networkx as nx
 import time
 import logging
 from contextlib import contextmanager
-from typing import Union, Tuple, List, Dict, Optional
+from typing import Union, Tuple, List, Dict, Optional, Callable, Any
 from collections import Counter, defaultdict
 from ._splitter import SeparatorSplitter
 from ._utils import (
@@ -34,6 +34,14 @@ from .base import (
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .config import get_text_processing_config, get_performance_config
 from ._cluster_utils import Hierarchical_Clustering
+
+# Optional instrumentation imports - set to None if not available
+try:
+    from ._llm import record_llm_usage_with_context
+    from ._token_estimation import LLMCallType
+except ImportError:
+    record_llm_usage_with_context = None
+    LLMCallType = None
 
 
 @contextmanager
@@ -159,7 +167,7 @@ async def _handle_entity_relation_summary(
         description: description
         global_config: global configuration
     """
-    use_llm_func: callable = global_config["cheap_model_func"]
+    use_llm_func: Callable = global_config["cheap_model_func"]
     llm_max_tokens = global_config["cheap_model_max_token_size"]
     tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["entity_summary_to_max_tokens"]
@@ -305,12 +313,13 @@ async def _merge_edges_then_upsert(
     already_order = []
     if await knwoledge_graph_inst.has_edge(src_id, tgt_id):
         already_edge = await knwoledge_graph_inst.get_edge(src_id, tgt_id)
-        already_weights.append(already_edge["weight"])
-        already_source_ids.extend(
-            split_string_by_multi_markers(already_edge["source_id"], [GRAPH_FIELD_SEP])
-        )
-        already_description.append(already_edge["description"])
-        already_order.append(already_edge.get("order", 1))
+        if already_edge is not None:
+            already_weights.append(already_edge["weight"])
+            already_source_ids.extend(
+                split_string_by_multi_markers(already_edge["source_id"], [GRAPH_FIELD_SEP])
+            )
+            already_description.append(already_edge["description"])
+            already_order.append(already_edge.get("order", 1))
 
     # [numberchiffre]: `Relationship.order` is only returned from DSPy's predictions
     order = min([dp.get("order", 1) for dp in edges_data] + already_order)
@@ -332,7 +341,7 @@ async def _merge_edges_then_upsert(
                 },
             )
     description = await _handle_entity_relation_summary(
-        (src_id, tgt_id), description, global_config
+        f"{src_id}-{tgt_id}", description, global_config
     )
     await knwoledge_graph_inst.upsert_edge(
         src_id,
@@ -369,17 +378,13 @@ async def extract_hierarchical_entities(
     Returns:
         Tuple[List[Dict], List[Dict]]: (raw_nodes, raw_edges) with embeddings
     """
-    use_llm_func: callable = global_config["best_model_func"]
+    use_llm_func: Callable = global_config["best_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
-    # Import instrumentation helper
-    if token_estimator:
-        try:
-            from ._llm import record_llm_usage_with_context
-            from ._token_estimation import LLMCallType
-        except ImportError:
-            logger.warning("Could not import LLM instrumentation, proceeding without recording")
-            token_estimator = None
+    # Check if instrumentation is available
+    if token_estimator and (record_llm_usage_with_context is None or LLMCallType is None):
+        logger.warning("LLM instrumentation not available, proceeding without recording")
+        token_estimator = None
 
     ordered_chunks = list(chunks.items())
     entity_extract_prompt = PROMPTS[
@@ -417,7 +422,7 @@ async def extract_hierarchical_entities(
         
         # Record LLM usage for entity extraction
         final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
-        if token_estimator:
+        if token_estimator and record_llm_usage_with_context and LLMCallType:
             await record_llm_usage_with_context(
                 token_estimator=token_estimator,
                 call_type=LLMCallType.ENTITY_EXTRACTION,
@@ -438,7 +443,7 @@ async def extract_hierarchical_entities(
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
             
             # Record gleaning LLM usage
-            if token_estimator:
+            if token_estimator and record_llm_usage_with_context and LLMCallType:
                 await record_llm_usage_with_context(
                     token_estimator=token_estimator,
                     call_type=LLMCallType.CONTINUE_EXTRACTION,
@@ -465,7 +470,7 @@ async def extract_hierarchical_entities(
             )
             
             # Record loop detection LLM usage
-            if token_estimator:
+            if token_estimator and record_llm_usage_with_context and LLMCallType:
                 await record_llm_usage_with_context(
                     token_estimator=token_estimator,
                     call_type=LLMCallType.LOOP_DETECTION,
@@ -588,7 +593,7 @@ async def extract_hierarchical_entities(
         
         # Record LLM usage for relation extraction
         final_result = await use_llm_func(hint_prompt)  # feed into LLM with the prompt
-        if token_estimator:
+        if token_estimator and record_llm_usage_with_context and LLMCallType:
             await record_llm_usage_with_context(
                 token_estimator=token_estimator,
                 call_type=LLMCallType.RELATION_EXTRACTION,
@@ -608,7 +613,7 @@ async def extract_hierarchical_entities(
             glean_result = await use_llm_func(continue_prompt, history_messages=history)
             
             # Record relation gleaning LLM usage
-            if token_estimator:
+            if token_estimator and record_llm_usage_with_context and LLMCallType:
                 await record_llm_usage_with_context(
                     token_estimator=token_estimator,
                     call_type=LLMCallType.CONTINUE_EXTRACTION,
@@ -635,7 +640,7 @@ async def extract_hierarchical_entities(
             )
             
             # Record relation loop detection LLM usage
-            if token_estimator:
+            if token_estimator and record_llm_usage_with_context and LLMCallType:
                 await record_llm_usage_with_context(
                     token_estimator=token_estimator,
                     call_type=LLMCallType.LOOP_DETECTION,
@@ -815,7 +820,7 @@ async def extract_entities(
     entity_vdb: BaseVectorStorage,
     global_config: dict,
 ) -> Union[BaseGraphStorage, None]:
-    use_llm_func: callable = global_config["best_model_func"]
+    use_llm_func: Callable = global_config["best_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
     ordered_chunks = list(chunks.items())  # chunks
@@ -947,10 +952,10 @@ async def extract_entities(
     if entity_vdb is not None:
         data_for_vdb = {  # key is the md5 hash of the entity name string
             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                "content": dp["entity_name"]
-                + dp[
+                "content": str(dp["entity_name"])
+                + str(dp[
                     "description"
-                ],  # entity name and description construct the content
+                ]),  # entity name and description construct the content
                 "entity_name": dp["entity_name"],
             }
             for dp in all_entities_data
@@ -963,7 +968,7 @@ def _pack_single_community_by_sub_communities(
     community: SingleCommunitySchema,
     max_token_size: int,
     already_reports: dict[str, CommunitySchema],
-) -> tuple[str, int]:
+) -> tuple[str, int, set[str], set[tuple[str, str]]]:
     # TODO
     all_sub_communities = [
         already_reports[k] for k in community["sub_communities"] if k in already_reports
@@ -1028,8 +1033,8 @@ async def _pack_single_community_describe(
         [
             i,
             node_name,
-            node_data.get("entity_type", "UNKNOWN"),
-            node_data.get("description", "UNKNOWN"),
+            node_data.get("entity_type", "UNKNOWN") if node_data else "UNKNOWN",
+            node_data.get("description", "UNKNOWN") if node_data else "UNKNOWN",
             await knwoledge_graph_inst.node_degree(node_name),
         ]
         for i, (node_name, node_data) in enumerate(zip(nodes_in_order, nodes_data))
@@ -1043,7 +1048,7 @@ async def _pack_single_community_describe(
             i,
             edge_name[0],
             edge_name[1],
-            edge_data.get("description", "UNKNOWN"),
+            edge_data.get("description", "UNKNOWN") if edge_data else "UNKNOWN",
             await knwoledge_graph_inst.edge_degree(*edge_name),
         ]
         for i, (edge_name, edge_data) in enumerate(zip(edges_in_order, edges_data))
@@ -1144,19 +1149,15 @@ async def generate_community_report(
     """Generate community reports with optional LLM usage recording"""
     
     llm_extra_kwargs = global_config["special_community_report_llm_kwargs"]
-    use_llm_func: callable = global_config["best_model_func"]
-    use_string_json_convert_func: callable = global_config[
+    use_llm_func: Callable = global_config["best_model_func"]
+    use_string_json_convert_func: Callable = global_config[
         "convert_response_to_json_func"
     ]
 
-    # Import instrumentation helper
-    if token_estimator:
-        try:
-            from ._llm import record_llm_usage_with_context
-            from ._token_estimation import LLMCallType
-        except ImportError:
-            logger.warning("Could not import LLM instrumentation, proceeding without recording")
-            token_estimator = None
+    # Check if instrumentation is available
+    if token_estimator and (record_llm_usage_with_context is None or LLMCallType is None):
+        logger.warning("LLM instrumentation not available, proceeding without recording")
+        token_estimator = None
 
     community_report_prompt = PROMPTS["community_report"]
 
@@ -1182,7 +1183,7 @@ async def generate_community_report(
         
         # Record LLM usage for community report generation
         response = await use_llm_func(prompt, **llm_extra_kwargs)
-        if token_estimator:
+        if token_estimator and record_llm_usage_with_context and LLMCallType:
             # Calculate community size for context
             community_size = len(community.get("nodes", [])) + len(community.get("edges", []))
             
@@ -1330,12 +1331,13 @@ async def find_most_related_text_unit_from_entities(
             if c_id in all_text_units_lookup:
                 continue
             relation_counts = 0
-            for e in this_edges:
-                if (
-                    e[1] in all_one_hop_text_units_lookup
-                    and c_id in all_one_hop_text_units_lookup[e[1]]
-                ):
-                    relation_counts += 1
+            if this_edges:  # Check if this_edges is not None or empty
+                for e in this_edges:
+                    if (
+                        e[1] in all_one_hop_text_units_lookup
+                        and c_id in all_one_hop_text_units_lookup[e[1]]
+                    ):
+                        relation_counts += 1
             all_text_units_lookup[c_id] = {
                 "data": await text_chunks_db.get_by_id(c_id),
                 "order": index,
@@ -1343,18 +1345,18 @@ async def find_most_related_text_unit_from_entities(
             }
     if any([v is None for v in all_text_units_lookup.values()]):
         logger.warning("Text chunks are missing, maybe the storage is damaged")
-    all_text_units = [
+    all_text_units_extended = [
         {"id": k, **v} for k, v in all_text_units_lookup.items() if v is not None
     ]
-    all_text_units = sorted(  # sort by relation counts
-        all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
+    all_text_units_sorted = sorted(  # sort by relation counts
+        all_text_units_extended, key=lambda x: (x["order"], -x["relation_counts"])
     )
-    all_text_units = truncate_list_by_token_size(
-        all_text_units,
+    all_text_units_truncated = truncate_list_by_token_size(
+        all_text_units_sorted,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
     )
-    all_text_units: list[TextChunkSchema] = [t["data"] for t in all_text_units]
+    all_text_units: list[TextChunkSchema] = [t["data"] for t in all_text_units_truncated]
     return all_text_units
 
 
@@ -1368,7 +1370,8 @@ async def find_most_related_edges_from_entities(
     )
     all_edges = set()
     for this_edges in all_related_edges:
-        all_edges.update([tuple(sorted(e)) for e in this_edges])
+        if this_edges:  # Check if this_edges is not None or empty
+            all_edges.update([tuple(sorted(e)) for e in this_edges])
     all_edges = list(all_edges)
     all_edges_pack = await asyncio.gather(
         *[knowledge_graph_inst.get_edge(e[0], e[1]) for e in all_edges]
@@ -1404,7 +1407,22 @@ async def find_most_related_edges_from_paths(
     # all_reasoning_path = await asyncio.gather(
     #                         *[knowledge_graph_inst.get_edge(e[0], e[1]) for e in knowledge_graph_inst._graph.subgraph(path).edges()]
     #                     )
-    all_reasoning_path = knowledge_graph_inst._graph.subgraph(path).edges()
+    # Handle different graph storage implementations
+    try:
+        # This works for NetworkX-based implementations
+        if hasattr(knowledge_graph_inst, '_graph') and hasattr(knowledge_graph_inst._graph, 'subgraph'):  # type: ignore
+            all_reasoning_path = knowledge_graph_inst._graph.subgraph(path).edges()  # type: ignore
+        else:
+            # Fallback: get all edges between path nodes manually
+            all_reasoning_path = []
+            for i in range(len(path) - 1):
+                src, tgt = path[i], path[i + 1]
+                if await knowledge_graph_inst.has_edge(src, tgt):
+                    all_reasoning_path.append((src, tgt))
+    except Exception as e:
+        logger.warning(f"Failed to get subgraph edges: {e}")
+        all_reasoning_path = []
+    
     all_edges = set()
     all_edges.update([tuple(sorted(e)) for e in all_reasoning_path])
     all_edges = list(all_edges)

@@ -212,7 +212,7 @@ class ContextualUsageRecord:
     output_accuracy: Optional[float] = None
     total_accuracy: Optional[float] = None
 
-    metadata: Dict[str, Any] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.timestamp == 0.0:
@@ -1951,6 +1951,32 @@ class TokenEstimator:
                 self._prompt_token_cache[prompt_key] = base_tokens
                 logger.debug(f"Prompt '{prompt_key}': {base_tokens} base tokens")
 
+    def _initialize_default_estimates(self) -> Dict[str, Any]:
+        """Initialize default estimates for variable content"""
+        return {
+            "entity_extraction_entities_per_chunk_avg": 5,
+            "entity_extraction_tokens_per_entity": 20,
+            "relation_extraction_relations_per_chunk_avg": 3,
+            "relation_extraction_tokens_per_relation": 15,
+            "community_report_tokens_per_entity": 10,
+            "entity_disambiguation_entities_per_batch": 10,
+        }
+
+    def _initialize_dynamic_parameters(self) -> Dict[str, Any]:
+        """Initialize dynamic estimation parameters"""
+        return {
+            "gleaning_loops": {"avg_actual_loops": 1.2},
+            "hierarchical_clustering": {
+                "min_entities_for_clustering": 10,
+                "clustering_iterations_base": 3,
+                "max_clustering_iterations": 10,
+            },
+            "community_detection": {
+                "communities_per_100_entities": 15,
+                "max_overlap_ratio": 0.1,
+            },
+        }
+
     async def _get_base_estimation_parameters(
         self, call_type: LLMCallType
     ) -> Dict[str, Any]:
@@ -2642,11 +2668,14 @@ class TokenEstimator:
         all_estimates.extend(community_estimates)
 
         # Calculate cost
-        model_name = await self._get_primary_model_name(config)
+        model_name = self._get_primary_model_name(config)
         estimated_cost = self._calculate_cost(all_estimates, model_name)
 
         return PipelineEstimate(
-            estimates=all_estimates,
+            document_tokens=total_document_tokens,
+            num_chunks=int(num_chunks),
+            token_per_chunk=float(token_per_chunk),
+            call_estimates=all_estimates,
             total_input_tokens=sum(est.input_tokens for est in all_estimates),
             total_output_tokens=sum(
                 est.output_tokens_estimated for est in all_estimates
@@ -3041,7 +3070,7 @@ class TokenEstimator:
         entity_factor = num_entities / 100  # Scale factor for entity count
         iterations = min(max_iterations, base_iterations + (entity_factor * 0.1))
 
-        return max(ACCURACY_BASE, int(iterations))
+        return max(int(ACCURACY_BASE), int(iterations))
 
     async def _estimate_community_count(self, num_entities: int) -> int:
         """Estimate number of communities that will be detected"""
@@ -3059,7 +3088,7 @@ class TokenEstimator:
         # Adjust for overlap - some entities appear in multiple communities
         estimated_communities *= ACCURACY_BASE - overlap_ratio
 
-        return max(ACCURACY_BASE, int(estimated_communities))
+        return max(int(ACCURACY_BASE), int(estimated_communities))
 
     async def _estimate_chunk_processing_dynamic(
         self,
@@ -3234,7 +3263,7 @@ async def estimate_document_processing_cost(
     await estimator.improve_estimates()
 
     # Generate estimate
-    estimate = estimator.estimate_full_pipeline(document_content)
+    estimate = await estimator.estimate_full_pipeline(document_content)
 
     # Generate report
     report = estimator.generate_estimation_report(estimate)
@@ -3362,9 +3391,9 @@ def _extract_call_context(func_name: str, args: tuple, kwargs: dict) -> Dict[str
                 and len(args[CACHE_EXPIRY_RESET]) > min_content_length
             ):
                 # Likely chunk content
-                context["chunk_size"] = len(
+                context["chunk_size"] = str(len(
                     args[CACHE_EXPIRY_RESET].split()
-                )  # Rough word count
+                ))  # Rough word count
 
                 # Try to detect document type from content
                 content = args[CACHE_EXPIRY_RESET].lower()

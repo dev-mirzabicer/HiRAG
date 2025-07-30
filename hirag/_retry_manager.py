@@ -383,9 +383,11 @@ class RetryManager:
         start_time = time.time()
         
         for attempt in range(1, config.max_attempts + 1):
+            # Get circuit breaker outside try block to ensure it's always defined
+            circuit_breaker = self.circuit_breakers.get(call_type)
+            
             try:
                 # Check circuit breaker
-                circuit_breaker = self.circuit_breakers.get(call_type)
                 if circuit_breaker and not circuit_breaker.should_allow_request():
                     stats.circuit_breaker_trips += 1
                     raise Exception(f"Circuit breaker OPEN for {call_type.value}")
@@ -470,7 +472,10 @@ class RetryManager:
             del self.active_attempts[operation_id]
         
         logger.error(f"All retry attempts failed for {call_type.value}")
-        raise last_exception
+        if last_exception is not None:
+            raise last_exception
+        else:
+            raise Exception(f"All retry attempts failed for {call_type.value} with unknown error")
 
     async def get_statistics(self, call_type: Optional[LLMCallType] = None) -> Union[RetryStatistics, Dict[LLMCallType, RetryStatistics]]:
         """Get retry statistics"""

@@ -133,8 +133,8 @@ class PipelineCheckpoint:
     
     def get_stage_checkpoint(self, stage: CheckpointStage) -> Optional[StageCheckpoint]:
         """Get checkpoint for a specific stage"""
-        return self.stages.get(stage)
-    
+        return self.stages.get(stage.value)
+
     def is_stage_completed(self, stage: CheckpointStage) -> bool:
         """Check if a stage is completed"""
         checkpoint = self.get_stage_checkpoint(stage)
@@ -336,7 +336,7 @@ class CheckpointManager:
             metadata=metadata or {}
         )
         
-        self.current_checkpoint.stages[stage] = stage_checkpoint
+        self.current_checkpoint.stages[stage.value] = stage_checkpoint
         self.current_checkpoint.current_stage = stage
         
         await self._maybe_auto_checkpoint()
@@ -361,7 +361,7 @@ class CheckpointManager:
         if not self.current_checkpoint:
             return
         
-        stage_checkpoint = self.current_checkpoint.stages.get(stage)
+        stage_checkpoint = self.current_checkpoint.stages.get(stage.value)
         if not stage_checkpoint:
             logger.warning(f"No checkpoint found for stage: {stage.value}")
             return
@@ -393,7 +393,7 @@ class CheckpointManager:
         if not self.current_checkpoint:
             return
         
-        stage_checkpoint = self.current_checkpoint.stages.get(stage)
+        stage_checkpoint = self.current_checkpoint.stages.get(stage.value)
         if not stage_checkpoint:
             logger.warning(f"No checkpoint found for stage: {stage.value}")
             return
@@ -430,7 +430,7 @@ class CheckpointManager:
         if not self.current_checkpoint:
             return
         
-        stage_checkpoint = self.current_checkpoint.stages.get(stage)
+        stage_checkpoint = self.current_checkpoint.stages.get(stage.value)
         if not stage_checkpoint:
             logger.warning(f"No checkpoint found for stage: {stage.value}")
             return
@@ -588,7 +588,7 @@ class CheckpointManager:
         
         total_progress = 0.0
         for stage, weight in stage_weights.items():
-            stage_checkpoint = self.current_checkpoint.stages.get(stage)
+            stage_checkpoint = self.current_checkpoint.stages.get(stage.value)
             if stage_checkpoint:
                 total_progress += weight * stage_checkpoint.progress
         
@@ -657,7 +657,7 @@ class CheckpointManager:
         ]
         
         for stage in CheckpointStage:
-            stage_checkpoint = cp.stages.get(stage)
+            stage_checkpoint = cp.stages.get(stage.value)
             if stage_checkpoint:
                 duration_str = f" ({stage_checkpoint.duration:.1f}s)" if stage_checkpoint.duration else ""
                 status_icon = {

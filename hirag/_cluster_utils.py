@@ -7,7 +7,8 @@ import umap
 import copy
 import asyncio
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Dict, Callable, Any, Union
+import numpy.typing as npt
 from sklearn.mixture import GaussianMixture
 from tqdm import tqdm
 from collections import Counter, defaultdict
@@ -19,7 +20,7 @@ from .base import (
 from ._utils import split_string_by_multi_markers, clean_str, is_float_regex
 from ._validation import validate
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
-from .config import get_graph_operations_config
+from .config import get_graph_operations_config, get_entity_processing_config
 
 # Initialize logging
 logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
@@ -27,18 +28,19 @@ logging.basicConfig(format="%(asctime)s - %(message)s", level=logging.INFO)
 # Get configuration for default values, but allow runtime override
 def get_clustering_defaults():
     """Get clustering defaults from centralized configuration"""
-    config = get_graph_operations_config()
+    graph_config = get_graph_operations_config()
+    entity_config = get_entity_processing_config()
     return {
-        'random_seed': config.random_seed,
-        'umap_n_neighbors': config.umap_n_neighbors,
-        'umap_metric': config.umap_metric,
-        'max_clusters': config.max_clusters,
-        'gmm_n_init': config.gmm_n_init,
-        'hierarchical_layers': config.hierarchical_layers,
-        'max_length_in_cluster': config.max_length_in_cluster,
-        'reduction_dimension': config.reduction_dimension,
-        'cluster_threshold': config.cluster_threshold,
-        'similarity_threshold': config.similarity_threshold,
+        'random_seed': graph_config.random_seed,
+        'umap_n_neighbors': graph_config.umap_n_neighbors,
+        'umap_metric': graph_config.umap_metric,
+        'max_clusters': graph_config.max_clusters,
+        'gmm_n_init': graph_config.gmm_n_init,
+        'hierarchical_layers': graph_config.hierarchical_layers,
+        'max_length_in_cluster': entity_config.max_length_in_cluster,
+        'reduction_dimension': graph_config.reduction_dimension,
+        'cluster_threshold': graph_config.cluster_threshold,
+        'similarity_threshold': graph_config.similarity_threshold,
         'embeddings_batch_size': 64  # This was in the original code
     }
 
@@ -52,7 +54,7 @@ def global_cluster_embeddings(
     embeddings: np.ndarray,
     dim: int,
     n_neighbors: Optional[int] = None,
-    metric: Optional[str] = None,
+    metric: Optional[str] = None
 ) -> np.ndarray:
     # Use configuration defaults if not provided
     defaults = get_clustering_defaults()
@@ -64,10 +66,19 @@ def global_cluster_embeddings(
     # Auto-calculate n_neighbors if still None
     if n_neighbors is None:
         n_neighbors = int((len(embeddings) - 1) ** 0.5)
+    
+    # Ensure metric is not None for type safety
+    if metric is None:
+        metric = 'euclidean'  # Default fallback
         
-    reduced_embeddings = umap.UMAP(
+    reduced_embeddings_result = umap.UMAP(
         n_neighbors=n_neighbors, n_components=dim, metric=metric
     ).fit_transform(embeddings)
+    # Handle the potential tuple return from UMAP and ensure we get ndarray
+    if isinstance(reduced_embeddings_result, tuple):
+        reduced_embeddings: np.ndarray = reduced_embeddings_result[0]
+    else:
+        reduced_embeddings: np.ndarray = np.asarray(reduced_embeddings_result)
     return reduced_embeddings
 
 
@@ -83,10 +94,19 @@ def local_cluster_embeddings(
         num_neighbors = 10  # Keep original default for local clustering
     if metric is None:
         metric = defaults['umap_metric']
+    
+    # Ensure metric is not None for type safety
+    if metric is None:
+        metric = 'euclidean'  # Default fallback
         
-    reduced_embeddings = umap.UMAP(
+    reduced_embeddings_result = umap.UMAP(
         n_neighbors=num_neighbors, n_components=dim, metric=metric
     ).fit_transform(embeddings)
+    # Handle the potential tuple return from UMAP and ensure we get ndarray
+    if isinstance(reduced_embeddings_result, tuple):
+        reduced_embeddings: np.ndarray = reduced_embeddings_result[0]
+    else:
+        reduced_embeddings: np.ndarray = np.asarray(reduced_embeddings_result)
     return reduced_embeddings
 
 
@@ -104,10 +124,9 @@ def fit_gaussian_mixture(n_components, embeddings, random_state):
 def get_optimal_clusters(embeddings, max_clusters: Optional[int] = None, random_state: int = 0, rel_tol: float = 1e-3):
     # Use configuration defaults if not provided
     defaults = get_clustering_defaults()
-    if max_clusters is None:
-        max_clusters = defaults['max_clusters']
-    max_clusters = min(len(embeddings), max_clusters)
-    n_clusters = np.arange(1, max_clusters)
+    _max_clusters = defaults['max_clusters'] if max_clusters is None else max_clusters
+    _max_clusters = min(len(embeddings), _max_clusters)
+    n_clusters = np.arange(1, _max_clusters)
     bics = []
     prev_bic = float('inf')
     for n in tqdm(n_clusters):
@@ -125,14 +144,13 @@ def get_optimal_clusters(embeddings, max_clusters: Optional[int] = None, random_
 def GMM_cluster(embeddings: np.ndarray, threshold: float, random_state: int = 0, n_init: Optional[int] = None):
     # Use configuration defaults if not provided
     defaults = get_clustering_defaults()
-    if n_init is None:
-        n_init = defaults['gmm_n_init']
+    _n_init = defaults['gmm_n_init'] if n_init is None else n_init
         
     n_clusters = get_optimal_clusters(embeddings)
     gm = GaussianMixture(
         n_components=n_clusters, 
         random_state=random_state, 
-        n_init=n_init,
+        n_init=_n_init,
         init_params='k-means++')
     gm.fit(embeddings)
     probs = gm.predict_proba(embeddings)        # [num, cluster_num]
@@ -177,7 +195,7 @@ def perform_clustering(
     all_clusters = [np.array(cluster) for cluster in all_clusters]
 
     if verbose:
-        logging.info(f"Total Clusters: {len(n_global_clusters)}")
+        logging.info(f"Total Clusters: {n_global_clusters}")
     return all_clusters
 
 
@@ -227,39 +245,28 @@ async def _handle_single_relationship_extraction(
 
 class ClusteringAlgorithm(ABC):
     @abstractmethod
-    def perform_clustering(self, embeddings: np.ndarray, **kwargs) -> List[List[int]]:
+    async def perform_clustering(self, entities: Dict, **kwargs) -> list[list[dict]]:
         pass
 
 
 class Hierarchical_Clustering(ClusteringAlgorithm):
     async def perform_clustering(
         self,
-        entity_vdb: BaseVectorStorage,
-        global_config: dict,
-        entities: dict,
-        token_estimator = None,  # Add token estimator parameter
-        layers: Optional[int] = None,
-        max_length_in_cluster: Optional[int] = None,
-        tokenizer=tiktoken.get_encoding("cl100k_base"),
-        reduction_dimension: Optional[int] = None,
-        cluster_threshold: Optional[float] = None,
-        verbose: bool = False,
-        threshold: Optional[float] = None,
-        thredshold_change_rate: float = 0.05
-    ) -> List[dict]:
+        entities: Dict,
+        **kwargs,
+    ) -> list[list[dict]]:
         # Use configuration defaults if not provided
         defaults = get_clustering_defaults()
-        if layers is None:
-            layers = defaults['hierarchical_layers']
-        if max_length_in_cluster is None:
-            max_length_in_cluster = defaults['max_length_in_cluster']
-        if reduction_dimension is None:
-            reduction_dimension = defaults['reduction_dimension']
-        if cluster_threshold is None:
-            cluster_threshold = defaults['cluster_threshold']
-        if threshold is None:
-            threshold = defaults['similarity_threshold']
-        use_llm_func: callable = global_config["best_model_func"]
+        layers = kwargs.get("layers", defaults['hierarchical_layers'])
+        max_length_in_cluster = kwargs.get("max_length_in_cluster", defaults['max_length_in_cluster'])
+        reduction_dimension = kwargs.get("reduction_dimension", defaults['reduction_dimension'])
+        cluster_threshold = kwargs.get("cluster_threshold", defaults['cluster_threshold'])
+        threshold = kwargs.get("threshold", defaults['similarity_threshold'])
+        use_llm_func: Callable[..., Any] = kwargs["global_config"]["best_model_func"]
+        verbose = kwargs.get("verbose", False)
+        tokenizer = kwargs.get("tokenizer", tiktoken.get_encoding("cl100k_base"))
+        thredshold_change_rate = kwargs.get("thredshold_change_rate", 0.05)
+
         # Get the embeddings from the nodes
         nodes = list(entities.values())
         embeddings = np.array([x["embedding"] for x in nodes])
@@ -288,7 +295,7 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
             if cluster_sparsity >= threshold:
                 logging.info(f"[Stop Clustering at Layer{layer} with Cluster Sparsity {cluster_sparsity}]")
                 break
-            if cluster_sparsity_change_rate <= thredshold_change_rate:
+            if cluster_sparsity_change_rate < thredshold_change_rate:
                 logging.info(f"[Stop Clustering at Layer{layer} with Cluster Sparsity Change Rate {round(cluster_sparsity_change_rate, 4) * 100}%]")
                 break
             # summarize
@@ -341,30 +348,30 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                 summarize_result = await use_llm_func(hint_prompt)
                 
                 # Record LLM usage for hierarchical clustering
-                if token_estimator:
-                    try:
-                        from ._llm import record_llm_usage_with_context
-                        from ._token_estimation import LLMCallType
-                        
-                        cluster_description = f"Clustering {len(cluster_nodes)} entities"
-                        await record_llm_usage_with_context(
-                            token_estimator=token_estimator,
-                            call_type=LLMCallType.HIERARCHICAL_CLUSTERING,
-                            actual_response=summarize_result,
-                            chunk_content=cluster_description,
-                            chunk_size=len(cluster_description.split()),
-                            document_type="general",
-                            model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
-                            success=True,
-                            metadata={
-                                "layer": layer,
-                                "cluster_label": int(label),
-                                "cluster_size": len(cluster_nodes),
-                                "total_length": total_length,
-                            }
-                        )
-                    except ImportError:
-                        pass  # Skip recording if imports fail
+                token_estimator = kwargs.get("token_estimator")
+                try:
+                    from ._llm import record_llm_usage_with_context
+                    from ._token_estimation import LLMCallType
+                    
+                    cluster_description = f"Clustering {len(cluster_nodes)} entities"
+                    await record_llm_usage_with_context(
+                        token_estimator=token_estimator,
+                        call_type=LLMCallType.HIERARCHICAL_CLUSTERING,
+                        actual_response=summarize_result,
+                        chunk_content=cluster_description,
+                        chunk_size=len(cluster_description.split()),
+                        document_type="general",
+                        model_name=getattr(use_llm_func, '__name__', 'unknown_model'),
+                        success=True,
+                        metadata={
+                            "layer": layer,
+                            "cluster_label": int(label),
+                            "cluster_size": len(cluster_nodes),
+                            "total_length": total_length,
+                        }
+                    )
+                except ImportError:
+                    pass  # Skip recording if imports fail
                 chunk_key = ""
                 # resolve results
                 records = split_string_by_multi_markers(                                            # split entities from result --> list of entities
@@ -411,6 +418,7 @@ class Hierarchical_Clustering(ClusteringAlgorithm):
                     start_index = i * embeddings_batch_size
                     end_index = min((i + 1) * embeddings_batch_size, len(entity_discriptions))
                     batch = entity_discriptions[start_index:end_index]
+                    entity_vdb: BaseVectorStorage = kwargs["entity_vdb"]
                     result = await entity_vdb.embedding_func(batch)
                     entity_sequence_embeddings.extend(result)
                 entity_embeddings = entity_sequence_embeddings
