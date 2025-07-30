@@ -198,3 +198,5 @@ pyrightconfig.json
 
 test_*.py
 .serena/
+
+.python-version
