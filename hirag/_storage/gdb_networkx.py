@@ -3,7 +3,7 @@ import json
 import os
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Union, cast
+from typing import Any, Union, cast, Optional
 import networkx as nx
 import numpy as np
 
@@ -18,7 +18,7 @@ from ..prompt import GRAPH_FIELD_SEP
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
     @staticmethod
-    def load_nx_graph(file_name) -> nx.Graph:
+    def load_nx_graph(file_name) -> Optional[nx.Graph]:
         if os.path.exists(file_name):
             return nx.read_graphml(file_name)
         return None
@@ -93,6 +93,11 @@ class NetworkXStorage(BaseGraphStorage):
             "node2vec": self._node2vec_embed,
         }
 
+    @property
+    def graph(self) -> nx.Graph:
+        """Access to the underlying NetworkX graph object."""
+        return self._graph
+
     async def index_done_callback(self):
         NetworkXStorage.write_nx_graph(self._graph, self._graphml_xml_file)
 
@@ -107,12 +112,23 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def node_degree(self, node_id: str) -> int:
         # [numberchiffre]: node_id not part of graph returns `DegreeView({})` instead of 0
-        return self._graph.degree(node_id) if self._graph.has_node(node_id) else 0
+        if self._graph.has_node(node_id):
+            degree = self._graph.degree(node_id)
+            return int(degree) if isinstance(degree, int) else 0
+        return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        return (self._graph.degree(src_id) if self._graph.has_node(src_id) else 0) + (
-            self._graph.degree(tgt_id) if self._graph.has_node(tgt_id) else 0
-        )
+        src_degree = 0
+        if self._graph.has_node(src_id):
+            degree = self._graph.degree(src_id)
+            src_degree = int(degree) if isinstance(degree, int) else 0
+        
+        tgt_degree = 0
+        if self._graph.has_node(tgt_id):
+            degree = self._graph.degree(tgt_id)
+            tgt_degree = int(degree) if isinstance(degree, int) else 0
+        
+        return src_degree + tgt_degree
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -124,11 +140,11 @@ class NetworkXStorage(BaseGraphStorage):
             return list(self._graph.edges(source_node_id))
         return None
 
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, Any]):
         self._graph.add_node(node_id, **node_data)
 
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, Any]
     ):
         self._graph.add_edge(source_node_id, target_node_id, **edge_data)
 
@@ -138,19 +154,21 @@ class NetworkXStorage(BaseGraphStorage):
         await self._clustering_algorithms[algorithm]()
 
     async def community_schema(self) -> dict[str, SingleCommunitySchema]:
-        results = defaultdict(
-            lambda: dict(
-                level=None,
-                title=None,
-                edges=set(),
-                nodes=set(),
-                chunk_ids=set(),
-                occurrence=0.0,
-                sub_communities=[],
-            )
+        # Initialize with proper types
+        results: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "level": 0,
+                "title": "",
+                "edges": set(),
+                "nodes": set(),
+                "chunk_ids": set(),
+                "occurrence": 0.0,
+                "sub_communities": [],
+            }
         )
         max_num_ids = 0
-        levels = defaultdict(set)
+        levels: dict[int, set[str]] = defaultdict(set)
+        
         for node_id, node_data in self._graph.nodes(data=True):
             if "clusters" not in node_data:
                 continue
@@ -163,14 +181,33 @@ class NetworkXStorage(BaseGraphStorage):
                 levels[level].add(cluster_key)
                 results[cluster_key]["level"] = level
                 results[cluster_key]["title"] = f"Cluster {cluster_key}"
-                results[cluster_key]["nodes"].add(node_id)
-                results[cluster_key]["edges"].update(
-                    [tuple(sorted(e)) for e in this_node_edges]
-                )
-                results[cluster_key]["chunk_ids"].update(
-                    node_data["source_id"].split(GRAPH_FIELD_SEP)
-                )
-                max_num_ids = max(max_num_ids, len(results[cluster_key]["chunk_ids"]))
+                
+                # Ensure nodes is a set and add node
+                nodes_set = results[cluster_key]["nodes"]
+                if not isinstance(nodes_set, set):
+                    nodes_set = set()
+                    results[cluster_key]["nodes"] = nodes_set
+                nodes_set.add(node_id)
+                
+                # Ensure edges is a set and update edges
+                edges_set = results[cluster_key]["edges"]
+                if not isinstance(edges_set, set):
+                    edges_set = set()
+                    results[cluster_key]["edges"] = edges_set
+                edges_set.update([tuple(sorted(e)) for e in this_node_edges])
+                
+                # Ensure chunk_ids is a set and update chunk_ids
+                chunk_ids_set = results[cluster_key]["chunk_ids"]
+                if not isinstance(chunk_ids_set, set):
+                    chunk_ids_set = set()
+                    results[cluster_key]["chunk_ids"] = chunk_ids_set
+                
+                # Handle source_id safely
+                source_id = node_data.get("source_id", "")
+                if isinstance(source_id, str) and source_id:
+                    chunk_ids_set.update(source_id.split(GRAPH_FIELD_SEP))
+                
+                max_num_ids = max(max_num_ids, len(chunk_ids_set))
 
         ordered_levels = sorted(levels.keys())
         for i, curr_level in enumerate(ordered_levels[:-1]):
@@ -179,21 +216,44 @@ class NetworkXStorage(BaseGraphStorage):
             next_level_comms = levels[next_level]
             # compute the sub-communities by nodes intersection
             for comm in this_level_comms:
-                results[comm]["sub_communities"] = [
-                    c
-                    for c in next_level_comms
-                    if results[c]["nodes"].issubset(results[comm]["nodes"])
-                ]
+                sub_communities = []
+                for c in next_level_comms:
+                    c_nodes = results[c]["nodes"]
+                    comm_nodes = results[comm]["nodes"]
+                    if isinstance(c_nodes, set) and isinstance(comm_nodes, set):
+                        if c_nodes.issubset(comm_nodes):
+                            sub_communities.append(c)
+                results[comm]["sub_communities"] = sub_communities
 
+        # Convert to final format
+        final_results: dict[str, SingleCommunitySchema] = {}
         for k, v in results.items():
-            v["edges"] = list(v["edges"])
-            v["edges"] = [list(e) for e in v["edges"]]
-            v["nodes"] = list(v["nodes"])
-            v["chunk_ids"] = list(v["chunk_ids"])
-            v["occurrence"] = len(v["chunk_ids"]) / max_num_ids
-        return dict(results)
+            # Convert edges to list of tuples (str, str)
+            edges_set = v["edges"]
+            if isinstance(edges_set, set):
+                edges_list: list[tuple[str, str]] = []
+                for edge in edges_set:
+                    if isinstance(edge, tuple) and len(edge) == 2:
+                        edges_list.append((str(edge[0]), str(edge[1])))
+            else:
+                edges_list = []
+            
+            # Convert chunk_ids to proper format
+            chunk_ids = v["chunk_ids"]
+            chunk_ids_list = list(chunk_ids) if isinstance(chunk_ids, set) else []
+            
+            final_results[k] = {
+                "level": int(v["level"]),
+                "title": str(v["title"]),
+                "edges": edges_list,
+                "nodes": list(v["nodes"]) if isinstance(v["nodes"], set) else [],
+                "chunk_ids": chunk_ids_list,
+                "occurrence": float(len(chunk_ids_list) / max_num_ids if max_num_ids > 0 else 0.0),
+                "sub_communities": list(v["sub_communities"]) if isinstance(v["sub_communities"], list) else [],
+            }
+        return final_results
 
-    def _cluster_data_to_subgraphs(self, cluster_data: dict[str, list[dict[str, str]]]):
+    def _cluster_data_to_subgraphs(self, cluster_data: dict[str, list[dict[str, Any]]]):
         for node_id, clusters in cluster_data.items():
             self._graph.nodes[node_id]["clusters"] = json.dumps(clusters)
 
@@ -210,7 +270,7 @@ class NetworkXStorage(BaseGraphStorage):
             random_seed=self.global_config["graph_cluster_seed"],
         )
 
-        node_communities: dict[str, list[dict[str, str]]] = defaultdict(list)
+        node_communities: dict[str, list[dict[str, Any]]] = defaultdict(list)
         __levels = defaultdict(set)
         for partition in community_mapping:
             level_key = partition.level
