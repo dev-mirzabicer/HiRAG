@@ -61,7 +61,7 @@ If the variable is *highly* temporary, so much so that it is useless outside its
     *   **DO extract**: Definitions, formal statements, theorems, properties, specific combinators, systems, rules, and their descriptions.
     *   **DO extract**: Entities that are not explicitly defined but are used in the text, which means they were probably defined elsewhere. You should still extract them, **and your description should only include the information that is given in the text-- you should not add any information that is not given in the text, even if that means writing an incomplete definition**. No matter how obvious it may be, your description should not include any extra information than given in the text.
     *   **DO NOT extract**: Exercises, examples, editorial comments, narrative transitions, author's opinions, historical anecdotes (unless the historical fact itself is a core CL concept, e.g., "Curry's paradox"), section introductions/conclusions, or any text that describes the *structure* of the document rather than the *content* of CL.
-    *   **Example**: `\(CL_\\xi \equiv CL_\ext \cup CL_M\)` (extract). "The previous section inspected extensional equality while this section will inspect the equivalence of..." (DO NOT extract).
+    *   **Example**: `\\(CL_\\\\xi \\equiv CL_\\ext \\cup CL_M\\)` (extract). "The previous section inspected extensional equality while this section will inspect the equivalence of..." (DO NOT extract).
 
 2.  **Proof Handling (Atomic Units)**:
     *   A `proof` entity should be extracted as a single, atomic unit. Its `entity_description` should be the entire text of the proof.
@@ -119,7 +119,7 @@ Output:
 Example 3:
 Entity_types: [postulate, object, concept, property, proof]
 Text:
-Lemma 4.1 (Output Basis). Let the abstraction algorithm [x].M be defined by Definition 4.7. Let C_M be the set of constants occurring in M. Then the resulting term [x].M is constructed using only application and atoms from the set {S, K} ∪ (FV(M) \ {x}) ∪ C_M. Specifically, if M ∈ T({S, K}), then [x].M ∈ T({S, K}).
+Lemma 4.1 (Output Basis). Let the abstraction algorithm [x].M be defined by Definition 4.7. Let C_M be the set of constants occurring in M. Then the resulting term [x].M is constructed using only application and atoms from the set {S, K} ∪ (FV(M) \\ {{x}}) ∪ C_M. Specifically, if M ∈ T({S, K}), then [x].M ∈ T({S, K}).
 
 Output:
 ("entity"{tuple_delimiter}"OUTPUT BASIS LEMMA"{tuple_delimiter}"postulate"{tuple_delimiter}"States that the term resulting from the abstraction algorithm, [x].M, is constructed using only application and atoms from the set {S, K} ∪ (FV(M) \\ {x}) ∪ C_M. It specifies that if M is in the set of terms over {S, K}, then the resulting term [x].M is also in the set of terms over {S, K}."{tuple_delimiter}false){record_delimiter}

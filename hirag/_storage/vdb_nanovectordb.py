@@ -1,6 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
+from typing import Dict, Any, cast
 import numpy as np
 from nano_vectordb import NanoVectorDB
 
@@ -48,7 +49,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
-        results = self._client.upsert(datas=list_data)
+        results = self._client.upsert(datas=cast(Any, list_data))
         return results
 
     async def query(self, query: str, top_k=5):
